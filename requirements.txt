@@ -61,3 +61,4 @@ pandas_ta
 backtesting
 altair
 requests
+scikit-learn

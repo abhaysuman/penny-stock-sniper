@@ -183,6 +183,7 @@ if st.session_state.page == "scanner":
                 results.sort(key=lambda x: x['Status'], reverse=True)
                 st.success(f"🎉 Found {len(results)} high-quality trades!")
                 
+                # Grid Display
                 for i in range(0, len(results), 3):
                     cols = st.columns(3)
                     for j in range(3):
@@ -192,7 +193,11 @@ if st.session_state.page == "scanner":
                                 with st.container(border=True):
                                     c1, c2 = st.columns([2, 1])
                                     c1.metric(item['Ticker'], f"₹{item['Price']:.2f}")
+                                    
+                                    # NEW: Show Status AND AI Score
+                                    score_color = "green" if item['AI_Score'] > 60 else "orange"
                                     c2.markdown(f"**{item['Status']}**")
+                                    c2.markdown(f":{score_color}[AI Confidence: {item['AI_Score']}%]")
                                     
                                     chart = make_sparkline(item['Chart'], item['Color'])
                                     st.altair_chart(chart, use_container_width=True)
