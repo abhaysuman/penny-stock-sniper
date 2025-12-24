@@ -101,12 +101,12 @@ def analyze_ticker_precision(ticker, wallet_size):
             
             ai_score = train_and_predict(df)
             
-            status = "✅ UPTREND"
+            status = "UPTREND"
             # Strict logic for Strong Buy
             if (ai_score > 75) and (last['ADX'] > 20) and (last['RSI_Slope'] > 0):
-                status = "🔥 STRONG BUY"
+                status = "STRONG BUY"
             elif ai_score > 60:
-                status = "🦅 AI CONFIRMED"
+                status = "AI CONFIRMED"
 
             sparkline = df['Close'].tail(30).reset_index(drop=True)
             color = "#00FF00" if sparkline.iloc[-1] >= sparkline.iloc[0] else "#FF4B4B"
