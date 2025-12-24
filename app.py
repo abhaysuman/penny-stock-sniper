@@ -5,6 +5,9 @@ import io
 import time
 import altair as alt
 import trading_bot as bot
+from backtesting import Backtest, Strategy
+from backtesting.lib import crossover
+import streamlit.components.v1 as components
 
 # --- CONFIG ---
 st.set_page_config(layout="wide", page_title="AI Infinity Scanner", page_icon="🦅")
@@ -25,34 +28,46 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- STATE ---
+if 'page' not in st.session_state: st.session_state.page = "scanner"
+if 'selected_ticker' not in st.session_state: st.session_state.selected_ticker = None
 if 'is_scanning' not in st.session_state: st.session_state.is_scanning = False
 if 'scanned_results' not in st.session_state: st.session_state.scanned_results = []
 if 'scan_logs' not in st.session_state: st.session_state.scan_logs = []
 if 'scan_index' not in st.session_state: st.session_state.scan_index = 0
 
+# --- NAVIGATION ---
+def go_to_details(ticker):
+    st.session_state.selected_ticker = ticker
+    st.session_state.is_scanning = False # Stop scanning
+    st.session_state.page = "details"
+
+def go_home():
+    st.session_state.page = "scanner"
+
+# --- STRATEGY FOR BACKTESTING ---
+class TrendStrategy(Strategy):
+    fast_ma = 9
+    slow_ma = 21
+    
+    def init(self):
+        self.sma1 = self.I(lambda x: pd.Series(x).rolling(self.fast_ma).mean(), self.data.Close)
+        self.sma2 = self.I(lambda x: pd.Series(x).rolling(self.slow_ma).mean(), self.data.Close)
+    
+    def next(self):
+        if crossover(self.sma1, self.sma2):
+            self.buy()
+        elif crossover(self.sma2, self.sma1):
+            self.position.close()
+
 # --- HELPERS ---
 def make_sparkline(data_series, color_hex):
     df = data_series.reset_index(drop=True).to_frame(name='price')
     df['index'] = df.index
-    
-    chart = alt.Chart(df).mark_line(
-        color=color_hex, 
-        strokeWidth=2
-    ).encode(
+    chart = alt.Chart(df).mark_line(color=color_hex, strokeWidth=2).encode(
         x=alt.X('index', axis=None),
-        y=alt.Y('price', 
-                scale=alt.Scale(zero=False, padding=1), 
-                axis=alt.Axis(labels=True, title=None, tickCount=3)
-        ),
+        y=alt.Y('price', scale=alt.Scale(zero=False, padding=1), axis=alt.Axis(labels=True, title=None, tickCount=3)),
         tooltip=['price']
-    ).properties(
-        height=60, 
-        width='container'
-    ).configure_axis(
-        grid=False
-    ).configure_view(
-        strokeWidth=0
-    )
+    ).properties(height=60, width='container').configure_axis(grid=False).configure_view(strokeWidth=0)
     return chart
 
 @st.cache_data(ttl=3600)
@@ -67,87 +82,110 @@ def fetch_realtime_symbols(region):
     except: return []
     return []
 
-# --- SIDEBAR ---
-with st.sidebar:
-    st.header("🦅 Infinity Scanner")
-    region = st.selectbox("Market", ["🇮🇳 India (NSE)"])
-    wallet = st.number_input("Max Price (₹)", value=2000, step=100)
+# --- PAGE 1: SCANNER ---
+if st.session_state.page == "scanner":
     
-    col1, col2 = st.columns(2)
-    if col1.button("▶ START", type="primary"):
-        st.session_state.is_scanning = True
-        st.session_state.scan_logs = [] 
-        st.rerun() # Force instant start
-    if col2.button("⏹ STOP"):
-        st.session_state.is_scanning = False
-        st.rerun()
+    # Sidebar
+    with st.sidebar:
+        st.header("🦅 Infinity Scanner")
+        region = st.selectbox("Market", ["🇮🇳 India (NSE)"])
+        wallet = st.number_input("Max Price (₹)", value=2000, step=100)
         
-    st.divider()
-    st.subheader("📝 Live Logs")
-    # Show last 10 logs reversed
-    for log in reversed(st.session_state.scan_logs[-10:]):
-        st.text(log)
+        col1, col2 = st.columns(2)
+        if col1.button("▶ START", type="primary"):
+            st.session_state.is_scanning = True
+            st.session_state.scan_logs = [] 
+            st.rerun()
+        if col2.button("⏹ STOP"):
+            st.session_state.is_scanning = False
+            st.rerun()
+            
+        st.divider()
+        st.subheader("📝 Live Logs")
+        for log in reversed(st.session_state.scan_logs[-10:]):
+            st.text(log)
 
-# --- MAIN PAGE ---
-st.title("Live Market Feed")
+    st.title("Live Market Feed")
 
-# 1. RENDER RESULTS (Always show this first)
-if st.session_state.scanned_results:
-    results = st.session_state.scanned_results
-    for i in range(0, len(results), 3):
-        cols = st.columns(3)
-        for j in range(3):
-            if i + j < len(results):
-                item = results[i+j]
-                with cols[j]:
-                    with st.container(border=True):
-                        c1, c2 = st.columns([2, 1])
-                        c1.metric(item['Ticker'], f"₹{item['Price']:.2f}")
-                        
-                        score_color = "green" if item['AI_Score'] > 60 else "orange"
-                        c2.markdown(f"**{item['Status']}**")
-                        c2.markdown(f":{score_color}[AI: {item['AI_Score']}%]")
-                        
-                        # Custom Chart
-                        chart = make_sparkline(item['Chart'], item['Color'])
-                        st.altair_chart(chart, use_container_width=True)
-                        
-                        st.caption(f"Stop: {item['Stop_Loss']:.1f} | Target: {item['Take_Profit']:.1f}")
-                        
-                        # Unique Key for every button to prevent crashes
-                        btn_key = f"btn_{item['Ticker']}"
-                        if st.button(f"Analyze {item['Ticker']}", key=btn_key):
-                            st.write("Analysis View Coming Soon...") # Placeholder to prevent rerun loop
+    # 1. RENDER RESULTS (Grid)
+    if st.session_state.scanned_results:
+        results = st.session_state.scanned_results
+        for i in range(0, len(results), 3):
+            cols = st.columns(3)
+            for j in range(3):
+                if i + j < len(results):
+                    item = results[i+j]
+                    with cols[j]:
+                        with st.container(border=True):
+                            c1, c2 = st.columns([2, 1])
+                            c1.metric(item['Ticker'], f"₹{item['Price']:.2f}")
+                            
+                            score_color = "green" if item['AI_Score'] > 60 else "orange"
+                            c2.markdown(f"**{item['Status']}**")
+                            c2.markdown(f":{score_color}[AI: {item['AI_Score']}%]")
+                            
+                            chart = make_sparkline(item['Chart'], item['Color'])
+                            st.altair_chart(chart, use_container_width=True)
+                            
+                            st.caption(f"Stop: {item['Stop_Loss']:.1f} | Target: {item['Take_Profit']:.1f}")
+                            
+                            # THE FIX: Use on_click callback
+                            st.button(f"Analyze {item['Ticker']}", 
+                                      key=f"btn_{item['Ticker']}", 
+                                      on_click=go_to_details, 
+                                      args=(item['Ticker'],))
 
-# 2. SCANNING LOGIC (Runs once, then reloads page)
-if st.session_state.is_scanning:
-    full_list = fetch_realtime_symbols(region)
-    
-    # Loop Logic
-    if st.session_state.scan_index >= len(full_list):
-        st.session_state.scan_index = 0
+    # 2. SCANNING LOGIC (Infinite Loop via Rerun)
+    if st.session_state.is_scanning:
+        full_list = fetch_realtime_symbols(region)
+        if st.session_state.scan_index >= len(full_list): st.session_state.scan_index = 0
+            
+        ticker = full_list[st.session_state.scan_index]
+        st.toast(f"Scanning: {ticker}...")
         
-    ticker = full_list[st.session_state.scan_index]
-    
-    # Visual Feedback
-    st.toast(f"Scanning: {ticker}...")
-    
-    # Analyze
-    result, message = bot.analyze_ticker_precision(ticker, wallet)
-    
-    # Log
-    log_msg = f"{ticker}: {message}"
-    st.session_state.scan_logs.append(log_msg)
-    
-    # Save Result
-    if result:
-        # Check for duplicates
-        if not any(d['Ticker'] == ticker for d in st.session_state.scanned_results):
+        result, message = bot.analyze_ticker_precision(ticker, wallet)
+        st.session_state.scan_logs.append(f"{ticker}: {message}")
+        
+        if result:
+            # UNIQUE CHECK: Remove if exists, then add new to top
+            st.session_state.scanned_results = [r for r in st.session_state.scanned_results if r['Ticker'] != ticker]
             st.session_state.scanned_results.insert(0, result)
             
-    # Increment & Rerun
-    st.session_state.scan_index += 1
+        st.session_state.scan_index += 1
+        time.sleep(0.05)
+        st.rerun()
+
+# --- PAGE 2: FULL ANALYSIS ---
+elif st.session_state.page == "details":
+    ticker = st.session_state.selected_ticker
+    st.button("← Back to Feed", on_click=go_home)
+    st.title(f"Deep Analysis: {ticker}")
     
-    # Instant Rerun (The engine of the live feed)
-    time.sleep(0.05) # Tiny buffer
-    st.rerun()
+    import yfinance as yf # Import locally to avoid scope issues
+    
+    with st.spinner("Running 2-Year Backtest Simulation..."):
+        try:
+            # 1. Get Data
+            df = yf.download(ticker, period="2y", progress=False)
+            if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+            df = df.dropna()
+            
+            # 2. Run Backtest
+            bt = Backtest(df, TrendStrategy, cash=100000, commission=.002)
+            stats = bt.run()
+            
+            # 3. Show Metrics
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Net Profit", f"{stats['Return [%]']:.2f}%", delta=f"{stats['Return [%]']:.2f}%")
+            m2.metric("Win Rate", f"{stats['Win Rate [%]']:.2f}%")
+            m3.metric("Trades", int(stats['# Trades']))
+            m4.metric("Max Drawdown", f"{stats['Max. Drawdown [%]']:.2f}%")
+            
+            # 4. Interactive Plot
+            st.subheader("Interactive Strategy Chart")
+            bt.plot(open_browser=False, filename='plot.html')
+            with open('plot.html', 'r', encoding='utf-8') as f:
+                components.html(f.read(), height=600, scrolling=True)
+                
+        except Exception as e:
+            st.error(f"Analysis failed: {e}")
