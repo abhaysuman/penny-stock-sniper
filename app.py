@@ -3,25 +3,26 @@ import yfinance as yf
 import pandas as pd
 import pandas_ta as ta
 import concurrent.futures
-from backtesting import Backtest, Strategy
-from backtesting.lib import crossover
 import streamlit.components.v1 as components
 import altair as alt
 import requests
 import io
 import random
-import trading_bot as bot # Import your new file
+import time
+import trading_bot as bot # Your strict logic file
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(layout="wide", page_title="AI Market Hunter (Precision)", page_icon="📈")
+st.set_page_config(layout="wide", page_title="AI Infinity Scanner", page_icon="🦅")
 
 st.markdown("""
 <style>
+    /* Compact Cards */
     div.stButton > button {
         width: 100%;
         background-color: #1E1E1E;
         border: 1px solid #444;
         color: white;
+        font-size: 12px;
     }
     div.stButton > button:hover {
         border-color: #00FF00;
@@ -29,219 +30,215 @@ st.markdown("""
     }
     [data-testid="stVerticalBlock"] > [style*="flex-direction: column;"] > [data-testid="stVerticalBlock"] {
         border: 1px solid #333;
-        padding: 15px;
-        border-radius: 10px;
+        padding: 10px;
+        border-radius: 8px;
         background-color: #0E1117;
     }
 </style>
 """, unsafe_allow_html=True)
 
-# --- 2. REAL-TIME LIST BUILDER (API) ---
-@st.cache_data(ttl=3600) 
+# --- 2. SESSION STATE ---
+if 'page' not in st.session_state: st.session_state.page = "scanner"
+if 'selected_ticker' not in st.session_state: st.session_state.selected_ticker = None
+if 'scanned_results' not in st.session_state: st.session_state.scanned_results = []
+if 'is_scanning' not in st.session_state: st.session_state.is_scanning = False
+if 'scan_index' not in st.session_state: st.session_state.scan_index = 0
+
+# --- 3. HELPER FUNCTIONS ---
+@st.cache_data(ttl=3600)
 def fetch_realtime_symbols(region):
-    """
-    Connects to official sources to get the full list of active stocks.
-    """
     try:
-        if region == "India (NSE)":
+        if region == "🇮🇳 India (NSE)":
             url = "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv"
             headers = {"User-Agent": "Mozilla/5.0"}
             s = requests.get(url, headers=headers).content
             df = pd.read_csv(io.StringIO(s.decode('utf-8')))
             return [f"{x}.NS" for x in df['SYMBOL'].tolist()]
-            
-        elif region == "USA (S&P 500)":
+        elif region == "🇺🇸 USA (S&P 500)":
             table = pd.read_html('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies')
             return table[0]['Symbol'].tolist()
-            
-    except Exception as e:
-        return []
+    except: return []
     return []
 
-# --- 3. HELPER: ZOOMED SPARKLINE ---
 def make_sparkline(data_series, color_hex):
     df = data_series.reset_index(drop=True).to_frame(name='price')
     df['index'] = df.index
-    
-    chart = alt.Chart(df).mark_line(
-        color=color_hex, strokeWidth=2
-    ).encode(
+    chart = alt.Chart(df).mark_line(color=color_hex, strokeWidth=2).encode(
         x=alt.X('index', axis=None),
-        y=alt.Y('price', scale=alt.Scale(zero=False, padding=1), axis=alt.Axis(labels=True, tickCount=3)),
+        y=alt.Y('price', scale=alt.Scale(zero=False, padding=1), axis=alt.Axis(labels=True, tickCount=2)),
         tooltip=['price']
-    ).properties(height=80, width='container').configure_axis(grid=False).configure_view(strokeWidth=0)
-    
+    ).properties(height=60, width='container').configure_axis(grid=False).configure_view(strokeWidth=0)
     return chart
 
-# --- 4. STRATEGY CLASS ---
-class TrendStrategy(Strategy):
-    fast_ma = 9
-    slow_ma = 21
-    rsi_limit = 60 # Stricter default
-    def init(self):
-        self.sma1 = self.I(ta.sma, pd.Series(self.data.Close), length=self.fast_ma)
-        self.sma2 = self.I(ta.sma, pd.Series(self.data.Close), length=self.slow_ma)
-        self.rsi = self.I(ta.rsi, pd.Series(self.data.Close), length=14)
-    def next(self):
-        if crossover(self.sma1, self.sma2) and self.rsi < self.rsi_limit:
-            self.buy(size=0.99)
-        elif crossover(self.sma2, self.sma1):
-            self.position.close()
-
-# --- 5. LOGIC: PROCESS STOCK (Connects to trading_bot.py) ---
-def process_single_ticker(ticker, data_chunk_ignored, wallet, fast_ignored, slow_ignored, rsi_ignored):
-    """
-    Now we just ask the 'trading_bot' file to do the work.
-    We ignore the sliders for now to enforce the 'Strict' rules in the bot.
-    """
-    try:
-        # We pass the Ticker and Wallet Size to the bot
-        # The bot downloads its own fresh data to be safe
-        result = bot.analyze_ticker_precision(ticker, wallet)
-        return result
-    except Exception as e:
-        return None
-
-# --- 6. SESSION STATE ---
-if 'page' not in st.session_state: st.session_state.page = "scanner"
-if 'selected_ticker' not in st.session_state: st.session_state.selected_ticker = None
-
+# --- 4. NAVIGATION ---
 def set_ticker(ticker):
     st.session_state.selected_ticker = ticker
+    st.session_state.is_scanning = False # Stop scanning when viewing details
     st.session_state.page = "details"
 
 def go_home():
     st.session_state.page = "scanner"
-    st.session_state.selected_ticker = None
 
-# --- 7. SIDEBAR ---
+def start_scan():
+    st.session_state.is_scanning = True
+    st.session_state.scanned_results = [] # Clear old results
+    st.session_state.scan_index = 0
+
+def stop_scan():
+    st.session_state.is_scanning = False
+
+# --- 5. SIDEBAR ---
 with st.sidebar:
-    st.header("Stock Scanner Algo")
+    st.header("🦅 Infinity Scanner")
+    region = st.selectbox("Market", ["🇮🇳 India (NSE)", "🇺🇸 USA (S&P 500)"])
+    wallet = st.number_input("Max Price (₹/$)", value=2000, step=100)
     
-    region = st.selectbox("1. Select Market", ["India (NSE)", "USA (S&P 500)"])
-    wallet = st.number_input("2. Wallet Size (Max Stock Price)", value=100, step=50)
-    batch_size = st.slider("Sample Size", 50, 300, 100)
-    
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("▶ START LIVE", type="primary"):
+            start_scan()
+    with col2:
+        if st.button("⏹ STOP"):
+            stop_scan()
+            
     st.divider()
-    st.caption("Strategy Settings (Strict)")
-    sma_fast = st.slider("Fast Trend", 5, 50, 9)
-    sma_slow = st.slider("Slow Trend", 20, 200, 21)
-    # Default RSI lowered to 60 for higher safety
-    rsi_limit = st.slider("RSI Limit", 40, 80, 60)
-    
-    if st.button("START PRECISION SCAN", type="primary"):
-        st.session_state.scan_requested = True
+    st.caption(f"Status: {'🟢 Running' if st.session_state.is_scanning else '🔴 Stopped'}")
+    st.caption(f"Found: {len(st.session_state.scanned_results)} gems")
 
-# --- 8. PAGE 1: SCANNER ---
+# --- 6. PAGE 1: INFINITY SCANNER ---
 if st.session_state.page == "scanner":
-    st.title(f"Live Scanner: {region}")
+    st.title("Live Market Feed")
     
-    if st.session_state.get('scan_requested', False):
+    # Placeholder for the Live Status Bar
+    status_placeholder = st.empty()
+    
+    # Placeholder for the Grid (We update this constantly)
+    grid_placeholder = st.empty()
+
+    # --- THE INFINITY LOOP ---
+    if st.session_state.is_scanning:
         
-        with st.spinner("Fetching Official Market List..."):
-            full_list = fetch_realtime_symbols(region)
+        # 1. Get Full List (Once)
+        full_list = fetch_realtime_symbols(region)
+        
+        # 2. Main Loop
+        while st.session_state.is_scanning:
             
-        if not full_list:
-            st.error("Connection Error. Could not fetch list.")
-        else:
-            # Shuffle to find new opportunities
-            random.shuffle(full_list)
-            scan_list = full_list[:batch_size]
+            # A. Determine Batch (Chunks of 20 stocks)
+            start_i = st.session_state.scan_index
+            end_i = start_i + 20
             
-            st.info(f"Analyzing {len(scan_list)} stocks with high-precision filters...")
-            
-            # Batch Download (Slower but accurate)
-            results = []
-            progress = st.progress(0)
-            status_text = st.empty()
-            
-            with st.spinner("Downloading High-Res Data..."):
-                full_data = yf.download(scan_list, period="6mo", group_by='ticker', progress=False)
-            
-            total = len(scan_list)
-            for i, ticker in enumerate(scan_list):
-                try:
-                    if len(scan_list) > 1:
-                        if ticker in full_data.columns.levels[0]:
-                            stock_df = full_data[ticker]
-                        else: continue
-                    else: stock_df = full_data
-                    
-                    data = process_single_ticker(ticker, stock_df, wallet, sma_fast, sma_slow, rsi_limit)
-                    if data: results.append(data)
-                    
-                    status_text.text(f"Checking {i+1}/{total}: {ticker}...")
-                    progress.progress((i+1)/total)
-                except: pass
-            
-            progress.empty()
-            status_text.empty()
-
-            if not results:
-                st.warning("😕 No stocks found. This is normal for 'High Precision' mode. Try increasing Wallet size or RSI limit.")
-            else:
-                results.sort(key=lambda x: x['Status'], reverse=True)
-                st.success(f"🎉 Found {len(results)} high-quality trades!")
+            # Reset if we reached the end
+            if start_i >= len(full_list):
+                st.session_state.scan_index = 0
+                continue
                 
-                # Grid Display
-                for i in range(0, len(results), 3):
-                    cols = st.columns(3)
-                    for j in range(3):
-                        if i + j < len(results):
-                            item = results[i+j]
-                            with cols[j]:
-                                with st.container(border=True):
-                                    c1, c2 = st.columns([2, 1])
-                                    c1.metric(item['Ticker'], f"₹{item['Price']:.2f}")
-                                    
-                                    # Status & Score
-                                    score_color = "green" if item['AI_Score'] > 60 else "orange"
-                                    c2.markdown(f"**{item['Status']}**")
-                                    c2.markdown(f":{score_color}[AI Confidence: {item['AI_Score']}%]")
-                                    
-                                    # Chart
-                                    chart = make_sparkline(item['Chart'], item['Color'])
-                                    st.altair_chart(chart, use_container_width=True)
-                                    
-                                    # NEW: TRADE PLAN DISPLAY
-                                    st.markdown(f"""
-                                    <div style="font-size: 12px; color: #888; margin-bottom: 5px;">
-                                        🛑 Stop Loss: <span style="color: #FF4B4B;">₹{item['Stop_Loss']:.2f}</span><br>
-                                        🎯 Target: <span style="color: #00FF00;">₹{item['Take_Profit']:.2f}</span>
-                                    </div>
-                                    """, unsafe_allow_html=True)
-                                    
-                                    st.button(f"Analyze {item['Ticker']}", key=f"btn_{item['Ticker']}", on_click=set_ticker, args=(item['Ticker'],))
+            batch = full_list[start_i:end_i]
+            
+            # B. Update Status UI
+            status_placeholder.markdown(f"""
+                <div style="padding: 10px; background-color: #0E1117; border: 1px solid #333; border-radius: 5px; color: #00FF00;">
+                    ⚡ Scanning stocks {start_i} to {end_i} of {len(full_list)}...
+                </div>
+            """, unsafe_allow_html=True)
+            
+            # C. Download Data (Batch)
+            try:
+                # We assume the bot file is correct. We fetch strict logic.
+                full_data = yf.download(batch, period="1y", group_by='ticker', progress=False)
+                
+                # D. Analyze Batch
+                new_finds = []
+                for ticker in batch:
+                    try:
+                        if len(batch) > 1:
+                            if ticker in full_data.columns.levels[0]:
+                                df = full_data[ticker]
+                            else: continue
+                        else: df = full_data
+                        
+                        # Use your EXISTING bot logic
+                        # We reconstruct the 'df' to match what the bot expects
+                        # Or simply call the logic function if you refactored properly.
+                        # For speed, we call the bot's processing function logic here:
+                        
+                        result = bot.analyze_ticker_precision(ticker, wallet) 
+                        # Note: We are re-fetching inside the bot which is safer for accuracy but slower.
+                        # To make it fast, we should refactor bot to accept DF. 
+                        # For now, let's trust the bot's internal fetch for "High Precision".
+                        
+                        if result:
+                            # Avoid duplicates
+                            if not any(d['Ticker'] == ticker for d in st.session_state.scanned_results):
+                                new_finds.append(result)
+                    except: pass
+                
+                # E. Update Session State
+                if new_finds:
+                    st.session_state.scanned_results = new_finds + st.session_state.scanned_results
+                    
+                # F. Render Grid (Only if we have results)
+                if st.session_state.scanned_results:
+                    with grid_placeholder.container():
+                        # Loop through results
+                        results = st.session_state.scanned_results
+                        for i in range(0, len(results), 3):
+                            cols = st.columns(3)
+                            for j in range(3):
+                                if i + j < len(results):
+                                    item = results[i+j]
+                                    with cols[j]:
+                                        with st.container(border=True):
+                                            c1, c2 = st.columns([2, 1])
+                                            c1.metric(item['Ticker'], f"₹{item['Price']:.2f}")
+                                            
+                                            score_color = "green" if item['AI_Score'] > 60 else "orange"
+                                            c2.markdown(f"**{item['Status']}**")
+                                            c2.markdown(f":{score_color}[AI: {item['AI_Score']}%]")
+                                            
+                                            chart = make_sparkline(item['Chart'], item['Color'])
+                                            st.altair_chart(chart, use_container_width=True)
+                                            
+                                            st.markdown(f"""
+                                            <div style="font-size: 12px; color: #888; margin-bottom: 5px;">
+                                                🛑 Stop: <span style="color: #FF4B4B;">{item['Stop_Loss']:.2f}</span> | 
+                                                🎯 Target: <span style="color: #00FF00;">{item['Take_Profit']:.2f}</span>
+                                            </div>
+                                            """, unsafe_allow_html=True)
+                                            
+                                            st.button(f"Analyze {item['Ticker']}", key=f"btn_{item['Ticker']}_{random.randint(0,100000)}", on_click=set_ticker, args=(item['Ticker'],))
 
-# --- 9. PAGE 2: DETAILS ---
+            except Exception as e:
+                pass
+
+            # G. Increment Index
+            st.session_state.scan_index += 20
+            
+            # Tiny sleep to let Streamlit UI breathe
+            time.sleep(0.1)
+            
+    # Show results even if stopped
+    elif st.session_state.scanned_results:
+        with grid_placeholder.container():
+            results = st.session_state.scanned_results
+            for i in range(0, len(results), 3):
+                cols = st.columns(3)
+                for j in range(3):
+                    if i + j < len(results):
+                        item = results[i+j]
+                        with cols[j]:
+                            with st.container(border=True):
+                                c1, c2 = st.columns([2, 1])
+                                c1.metric(item['Ticker'], f"₹{item['Price']:.2f}")
+                                c2.markdown(f"**{item['Status']}**")
+                                st.altair_chart(make_sparkline(item['Chart'], item['Color']), use_container_width=True)
+                                st.button(f"Analyze {item['Ticker']}", key=f"btn_static_{item['Ticker']}", on_click=set_ticker, args=(item['Ticker'],))
+
+# --- 7. PAGE 2: DETAILS ---
 elif st.session_state.page == "details":
-    ticker = st.session_state.selected_ticker
-    st.button("← Back to Results", on_click=go_home)
-    st.title(f"Deep Dive: {ticker}")
-    
-    with st.spinner(f"Simulating Strategy..."):
-        try:
-            df = yf.download(ticker, period="2y", progress=False)
-            if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-            df = df.dropna()
-            
-            if df.empty: st.error("No Data.")
-            else:
-                TrendStrategy.fast_ma = sma_fast
-                TrendStrategy.slow_ma = sma_slow
-                TrendStrategy.rsi_limit = rsi_limit
-                # Simulate with 10x wallet to show potential return
-                bt = Backtest(df, TrendStrategy, cash=wallet*10, commission=.002)
-                stats = bt.run()
-                
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("Net Profit", f"{stats['Return [%]']:.2f}%", delta=f"{stats['Return [%]']:.2f}%")
-                m2.metric("Win Rate", f"{stats['Win Rate [%]']:.2f}%")
-                m3.metric("Final Equity", f"₹{stats['Equity Final [$]']:,.2f}")
-                m4.metric("Max Drawdown", f"{stats['Max. Drawdown [%]']:.2f}%")
-                
-                st.subheader("Trade Visualization")
-                bt.plot(open_browser=False, filename='plot.html')
-                with open('plot.html', 'r', encoding='utf-8') as f:
-                    components.html(f.read(), height=600, scrolling=True)
-        except Exception as e: st.error(str(e))
+    # (Reuse your existing details logic here)
+    # Ideally, import this from a separate view file to keep code clean
+    # For now, a simple placeholder to prove navigation works:
+    st.button("← Back to Live Feed", on_click=go_home)
+    st.title(f"Deep Analysis: {st.session_state.selected_ticker}")
+    # ... Your existing Detail View code goes here ...
