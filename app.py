@@ -69,7 +69,7 @@ def make_sparkline(data_series, color_hex):
 @st.cache_data(ttl=3600)
 def fetch_realtime_symbols(region):
     try:
-        if region == "🇮🇳 India (NSE)":
+        if region == "India (NSE)":
             url = "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv"
             headers = {"User-Agent": "Mozilla/5.0"}
             s = requests.get(url, headers=headers).content
@@ -82,8 +82,8 @@ def fetch_realtime_symbols(region):
 if st.session_state.page == "scanner":
     
     with st.sidebar:
-        st.header("🦅 Infinity Scanner")
-        region = st.selectbox("Market", ["🇮🇳 India (NSE)"])
+        st.header("Scanner")
+        region = st.selectbox("Market", ["India (NSE)"])
         wallet = st.number_input("Max Price (₹)", value=2000, step=100)
         
         col1, col2 = st.columns(2)
@@ -96,11 +96,11 @@ if st.session_state.page == "scanner":
             st.rerun()
             
         st.divider()
-        st.subheader("📝 Live Logs")
+        st.subheader("Live Logs")
         for log in reversed(st.session_state.scan_logs[-10:]):
             st.text(log)
 
-    st.title("Live Market Feed (Sorted by AI Score)")
+    st.title("Live Stocks")
 
     # 1. RENDER RESULTS
     if st.session_state.scanned_results:
