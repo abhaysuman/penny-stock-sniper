@@ -10,7 +10,7 @@ from backtesting.lib import crossover
 import streamlit.components.v1 as components
 
 # --- CONFIG ---
-st.set_page_config(layout="wide", page_title="AI Infinity Scanner", page_icon="🦅")
+st.set_page_config(layout="wide", page_title="AI Infinity Scanner", page_icon="📈")
 
 st.markdown("""
 <style>
