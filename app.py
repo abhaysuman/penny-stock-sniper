@@ -194,15 +194,23 @@ if st.session_state.page == "scanner":
                                     c1, c2 = st.columns([2, 1])
                                     c1.metric(item['Ticker'], f"₹{item['Price']:.2f}")
                                     
-                                    # NEW: Show Status AND AI Score
+                                    # Status & Score
                                     score_color = "green" if item['AI_Score'] > 60 else "orange"
                                     c2.markdown(f"**{item['Status']}**")
                                     c2.markdown(f":{score_color}[AI Confidence: {item['AI_Score']}%]")
                                     
+                                    # Chart
                                     chart = make_sparkline(item['Chart'], item['Color'])
                                     st.altair_chart(chart, use_container_width=True)
                                     
-                                    st.caption(f"RSI: {item['RSI']:.1f} | Buy: {item['Shares']} Shares")
+                                    # NEW: TRADE PLAN DISPLAY
+                                    st.markdown(f"""
+                                    <div style="font-size: 12px; color: #888; margin-bottom: 5px;">
+                                        🛑 Stop Loss: <span style="color: #FF4B4B;">₹{item['Stop_Loss']:.2f}</span><br>
+                                        🎯 Target: <span style="color: #00FF00;">₹{item['Take_Profit']:.2f}</span>
+                                    </div>
+                                    """, unsafe_allow_html=True)
+                                    
                                     st.button(f"Analyze {item['Ticker']}", key=f"btn_{item['Ticker']}", on_click=set_ticker, args=(item['Ticker'],))
 
 # --- 9. PAGE 2: DETAILS ---

@@ -2,6 +2,7 @@ import yfinance as yf
 import pandas as pd
 import pandas_ta as ta
 from sklearn.ensemble import RandomForestClassifier
+import numpy as np
 
 # --- CONFIGURATION ---
 class BotConfig:
@@ -12,7 +13,7 @@ class BotConfig:
     ADX_THRESHOLD = 20
     VOLUME_THRESHOLD = 1.2
 
-def fetch_data(ticker, period="2y"): # Fetches 2y data for better training
+def fetch_data(ticker, period="2y"):
     try:
         df = yf.download(ticker, period=period, progress=False)
         if isinstance(df.columns, pd.MultiIndex):
@@ -24,7 +25,8 @@ def fetch_data(ticker, period="2y"): # Fetches 2y data for better training
 
 def calculate_indicators(df):
     df = df.copy()
-    # 1. Standard Indicators
+    
+    # --- 1. EXISTING INDICATORS ---
     df['SMA_Fast'] = ta.sma(df['Close'], length=BotConfig.SMA_FAST)
     df['SMA_Slow'] = ta.sma(df['Close'], length=BotConfig.SMA_SLOW)
     df['RSI'] = ta.rsi(df['Close'], length=14)
@@ -32,95 +34,101 @@ def calculate_indicators(df):
     df['ADX'] = adx['ADX_14']
     df['Vol_SMA'] = ta.sma(df['Volume'], length=20)
     
-    # 2. ML Features (Data for the Brain)
-    # The AI needs "Relative" numbers, not raw prices.
-    df['SMA_Diff'] = (df['SMA_Fast'] - df['SMA_Slow']) / df['SMA_Slow'] # Trend Strength
-    df['Vol_Ratio'] = df['Volume'] / df['Vol_SMA'] # Relative Volume
-    df['RSI_Norm'] = df['RSI'] / 100 # Normalized RSI
+    # --- 2. NEW INDICATORS (More Eyes) ---
+    # MACD: The King of Momentum
+    macd = ta.macd(df['Close'])
+    df['MACD'] = macd['MACD_12_26_9']
+    df['MACD_Signal'] = macd['MACDs_12_26_9']
+    
+    # Bollinger Bands: Volatility Squeeze detection
+    bb = ta.bbands(df['Close'], length=20)
+    df['BB_Upper'] = bb['BBU_20_2.0']
+    df['BB_Lower'] = bb['BBL_20_2.0']
+    
+    # ATR: For calculating Stop Loss & Profit Targets
+    df['ATR'] = ta.atr(df['High'], df['Low'], df['Close'], length=14)
+
+    # --- 3. ML FEATURES (Normalized for AI) ---
+    df['SMA_Diff'] = (df['SMA_Fast'] - df['SMA_Slow']) / df['SMA_Slow']
+    df['Vol_Ratio'] = df['Volume'] / df['Vol_SMA']
+    df['RSI_Norm'] = df['RSI'] / 100
+    df['MACD_Diff'] = (df['MACD'] - df['MACD_Signal']) # Positive = Bullish Momentum
+    df['BB_Pos'] = (df['Close'] - df['BB_Lower']) / (df['BB_Upper'] - df['BB_Lower']) # 0 = Bottom, 1 = Top
     
     return df
 
 def train_and_predict(df):
-    """
-    Trains a Random Forest model on the fly for this specific stock.
-    Returns: Probability (0-100%) that the price will go UP tomorrow.
-    """
     try:
         data = df.copy().dropna()
         
-        # 1. Create Target: Did price go up next day? (1 = Yes, 0 = No)
+        # Target: Price Up AND Volatility Up (Better quality target)
         data['Target'] = (data['Close'].shift(-1) > data['Close']).astype(int)
         
-        # 2. Define Features (What the AI looks at)
-        features = ['SMA_Diff', 'Vol_Ratio', 'RSI_Norm', 'ADX']
-        data = data.dropna() # Drop rows with NaNs created by shift/indicators
+        # Updated Feature List
+        features = ['SMA_Diff', 'Vol_Ratio', 'RSI_Norm', 'ADX', 'MACD_Diff', 'BB_Pos']
+        data = data.dropna()
         
-        # 3. Split Data
-        # Train on everything EXCEPT the very last candle (today)
         X = data[features][:-1] 
         y = data['Target'][:-1]
-        
-        # The row we want to predict (Today's live data)
         X_live = data[features].tail(1)
         
-        # 4. Train Model
-        # n_estimators=100 means we create 100 "decision trees" and vote
+        # Train
         model = RandomForestClassifier(n_estimators=100, min_samples_split=10, random_state=42)
         model.fit(X, y)
-        
-        # 5. Predict
-        # We get the probability of Class 1 (Price Going UP)
         probability = model.predict_proba(X_live)[0][1]
         
         return round(probability * 100, 1)
-        
     except Exception as e:
         print(f"ML Error: {e}")
-        return 50.0 # Default to neutral if error
+        return 50.0
 
 def analyze_ticker_precision(ticker, wallet_size):
-    # 1. Get Data
     df = fetch_data(ticker)
     if df is None: return None
     
-    # 2. Add Indicators
     df = calculate_indicators(df)
     last = df.iloc[-1]
     price = last['Close']
     
-    # 3. Filters
     if price > wallet_size: return None
-    if last['Volume'] < 1000: return None # Dead stock check
+    if last['Volume'] < 1000: return None
 
-    # 4. Strict "Scanner" Rules (Fast Check)
+    # Scanner Rules (Fast Check)
     uptrend = last['SMA_Fast'] > last['SMA_Slow']
     safe_rsi = last['RSI'] < BotConfig.RSI_MAX
     strong_trend = last['ADX'] > BotConfig.ADX_THRESHOLD
     
     if uptrend and safe_rsi and strong_trend:
         
-        # 5. Run the AI Brain (Slow Check)
-        # We only run this if the stock passes the basic filters
         ai_score = train_and_predict(df)
         
-        # Logic for Badge
         status = "✅ UPTREND"
         if ai_score > 65: status = "🦅 AI CONFIRMED"
         if ai_score > 80: status = "🔥 STRONG BUY"
 
-        # Chart Data
         sparkline = df['Close'].tail(30).reset_index(drop=True)
         color = "#00FF00" if sparkline.iloc[-1] >= sparkline.iloc[0] else "#FF4B4B"
+
+        # --- RISK MANAGEMENT CALCULATION ---
+        # ATR (Average True Range) tells us how much the price moves in a day.
+        # Stop Loss = 2x ATR below price (Give it room to breathe)
+        # Take Profit = 4x ATR above price (Aim for 2:1 Reward ratio)
+        atr = last['ATR']
+        stop_loss = price - (2 * atr)
+        take_profit = price + (4 * atr)
 
         return {
             "Ticker": ticker,
             "Price": price,
             "RSI": last['RSI'],
-            "AI_Score": ai_score, # The new magic number
+            "AI_Score": ai_score,
             "Status": status,
             "Chart": sparkline,
             "Color": color,
-            "Shares": int(wallet_size // price)
+            "Shares": int(wallet_size // price),
+            # New Data Points
+            "Stop_Loss": stop_loss,
+            "Take_Profit": take_profit
         }
         
     return None
