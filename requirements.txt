@@ -54,3 +54,10 @@ urllib3==2.6.2
 websockets==15.0.1
 xyzservices==2025.11.0
 yfinance==1.0
+streamlit
+yfinance
+pandas
+pandas_ta
+backtesting
+altair
+requests
