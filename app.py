@@ -13,7 +13,7 @@ import random
 import trading_bot as bot # Import your new file
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(layout="wide", page_title="AI Market Hunter (Precision)", page_icon="🦅")
+st.set_page_config(layout="wide", page_title="AI Market Hunter (Precision)", page_icon="📈")
 
 st.markdown("""
 <style>
@@ -43,14 +43,14 @@ def fetch_realtime_symbols(region):
     Connects to official sources to get the full list of active stocks.
     """
     try:
-        if region == "🇮🇳 India (NSE)":
+        if region == "India (NSE)":
             url = "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv"
             headers = {"User-Agent": "Mozilla/5.0"}
             s = requests.get(url, headers=headers).content
             df = pd.read_csv(io.StringIO(s.decode('utf-8')))
             return [f"{x}.NS" for x in df['SYMBOL'].tolist()]
             
-        elif region == "🇺🇸 USA (S&P 500)":
+        elif region == "USA (S&P 500)":
             table = pd.read_html('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies')
             return table[0]['Symbol'].tolist()
             
@@ -116,9 +116,9 @@ def go_home():
 
 # --- 7. SIDEBAR ---
 with st.sidebar:
-    st.header("🦅 Precision Scanner")
+    st.header("Stock Scanner Algo")
     
-    region = st.selectbox("1. Select Market", ["🇮🇳 India (NSE)", "🇺🇸 USA (S&P 500)"])
+    region = st.selectbox("1. Select Market", ["India (NSE)", "USA (S&P 500)"])
     wallet = st.number_input("2. Wallet Size (Max Stock Price)", value=100, step=50)
     batch_size = st.slider("Sample Size", 50, 300, 100)
     
@@ -129,7 +129,7 @@ with st.sidebar:
     # Default RSI lowered to 60 for higher safety
     rsi_limit = st.slider("RSI Limit", 40, 80, 60)
     
-    if st.button("🔎 START PRECISION SCAN", type="primary"):
+    if st.button("START PRECISION SCAN", type="primary"):
         st.session_state.scan_requested = True
 
 # --- 8. PAGE 1: SCANNER ---
