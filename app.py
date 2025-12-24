@@ -2,205 +2,233 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import pandas_ta as ta
+import concurrent.futures
 from backtesting import Backtest, Strategy
 from backtesting.lib import crossover
 import streamlit.components.v1 as components
+import altair as alt
 import requests
 import io
-import math
+import random
+import trading_bot as bot # Import your new file
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(layout="wide", page_title="Penny Stock Sniper (Live)")
+st.set_page_config(layout="wide", page_title="AI Market Hunter (Precision)", page_icon="🦅")
 
-st.title("🎯 Penny Stock Sniper (Live Menu)")
-st.markdown("**Status:** Dropdown now shows LIVE prices and daily trends.")
+st.markdown("""
+<style>
+    div.stButton > button {
+        width: 100%;
+        background-color: #1E1E1E;
+        border: 1px solid #444;
+        color: white;
+    }
+    div.stButton > button:hover {
+        border-color: #00FF00;
+        color: #00FF00;
+    }
+    [data-testid="stVerticalBlock"] > [style*="flex-direction: column;"] > [data-testid="stVerticalBlock"] {
+        border: 1px solid #333;
+        padding: 15px;
+        border-radius: 10px;
+        background-color: #0E1117;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-# --- 2. STOCK DATA & LIVE PRICES ---
-@st.cache_data(ttl=300) # Re-fetch live prices every 5 minutes
-def get_live_prices(ticker_list):
+# --- 2. REAL-TIME LIST BUILDER (API) ---
+@st.cache_data(ttl=3600) 
+def fetch_realtime_symbols(region):
     """
-    Downloads live data for ALL tickers in the list at once
-    to create a formatted 'Menu String' for each stock.
+    Connects to official sources to get the full list of active stocks.
     """
-    price_map = {}
-    
-    # Only fetch if list is small (to prevent crashing on 2000+ stocks)
-    if len(ticker_list) > 100:
-        return {}
-
     try:
-        # Download 1 day of data for all tickers in one shot
-        data = yf.download(ticker_list, period="5d", group_by='ticker', progress=False)
-        
-        for ticker in ticker_list:
-            try:
-                # Handle single-level vs multi-level columns
-                if len(ticker_list) == 1:
-                    stock_data = data
-                else:
-                    stock_data = data[ticker]
-                
-                # Get last two rows to calculate change
-                if not stock_data.empty:
-                    last_price = stock_data['Close'].iloc[-1]
-                    prev_price = stock_data['Close'].iloc[-2]
-                    change = ((last_price - prev_price) / prev_price) * 100
-                    
-                    # Formatting: Green for Up, Red for Down
-                    symbol = "🟢" if change >= 0 else "🔴"
-                    
-                    # Create the display string: "IDEA.NS  ₹14.50 🔴 -1.2%"
-                    price_map[ticker] = f"{ticker}   ₹{last_price:.2f} {symbol} {change:+.1f}%"
-            except:
-                price_map[ticker] = ticker # Fallback if data fails
-                
+        if region == "🇮🇳 India (NSE)":
+            url = "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv"
+            headers = {"User-Agent": "Mozilla/5.0"}
+            s = requests.get(url, headers=headers).content
+            df = pd.read_csv(io.StringIO(s.decode('utf-8')))
+            return [f"{x}.NS" for x in df['SYMBOL'].tolist()]
+            
+        elif region == "🇺🇸 USA (S&P 500)":
+            table = pd.read_html('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies')
+            return table[0]['Symbol'].tolist()
+            
     except Exception as e:
-        print(f"Error fetching batch prices: {e}")
-        
-    return price_map
+        return []
+    return []
 
-@st.cache_data(ttl=24*3600)
-def get_stock_lists():
-    # List 1: Penny Stocks (₹20 - ₹60)
-    popular_penny = [
-        "IDEA.NS", "YESBANK.NS", "SUZLON.NS", "UCOBANK.NS", "IOB.NS", 
-        "MAHABANK.NS", "CENTRALBK.NS", "NHPC.NS", "SJVN.NS", "RENUKA.NS", 
-        "TRIDENT.NS", "HCC.NS", "SOUTHBANK.NS", "MOREPENLAB.NS", "PNB.NS",
-        "ZOMATO.NS", "IDFCFIRSTB.NS", "GMRINFRA.NS", "BHEL.NS", "IRFC.NS"
-    ]
+# --- 3. HELPER: ZOOMED SPARKLINE ---
+def make_sparkline(data_series, color_hex):
+    df = data_series.reset_index(drop=True).to_frame(name='price')
+    df['index'] = df.index
     
-    # List 2: SUPER CHEAP (< ₹20)
-    super_cheap = [
-        "GTLINFRA.NS", "RPOWER.NS", "JPPOWER.NS", "VIKASECO.NS", 
-        "AKSHOPTFBR.NS", "FCSSOFT.NS", "BHANDARI.NS", "MPSINFOTEC.NS",
-        "3IINFOLTD.NS", "ALANKIT.NS", "RTNPOWER.NS", "ORIENTGREEN.NS",
-        "INVENTURE.NS", "SADBHAV.NS", "MTNL.NS", "IFCI.NS"
-    ]
+    chart = alt.Chart(df).mark_line(
+        color=color_hex, strokeWidth=2
+    ).encode(
+        x=alt.X('index', axis=None),
+        y=alt.Y('price', scale=alt.Scale(zero=False, padding=1), axis=alt.Axis(labels=True, tickCount=3)),
+        tooltip=['price']
+    ).properties(height=80, width='container').configure_axis(grid=False).configure_view(strokeWidth=0)
     
-    # List 3: Full NSE List
-    try:
-        url = "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        response = requests.get(url, headers=headers)
-        df = pd.read_csv(io.StringIO(response.text))
-        full_list = [f"{sym}.NS" for sym in df['SYMBOL'].tolist()]
-        full_list.sort()
-    except:
-        full_list = []
+    return chart
 
-    return popular_penny, super_cheap, full_list
-
-# Load Lists
-with st.spinner("Connecting to NSE..."):
-    pop_list, cheap_list, full_list = get_stock_lists()
-
-# --- 3. SIDEBAR CONTROLS ---
-st.sidebar.header("1. Asset Selection")
-
-filter_type = st.sidebar.radio(
-    "Select Category:", 
-    ["🔥 Popular Penny", "💰 Super Cheap (< ₹20)", "🌏 Search All"]
-)
-
-# Logic to switch lists and fetch prices
-if filter_type == "Popular Penny":
-    current_list = pop_list
-    with st.spinner("Fetching Live Prices..."):
-        price_display_map = get_live_prices(pop_list)
-        
-elif filter_type == "Super Cheap (< ₹20)":
-    current_list = cheap_list
-    with st.spinner("Scanning Bargain Bin..."):
-        price_display_map = get_live_prices(cheap_list)
-        
-else:
-    current_list = full_list
-    price_display_map = {} # Too many to fetch live
-
-# --- THE MAGIC DROPDOWN ---
-# We use 'format_func' to swap the boring name for the Rich Text name
-selected_ticker = st.sidebar.selectbox(
-    "Choose Stock", 
-    current_list,
-    format_func=lambda x: price_display_map.get(x, x) # Shows price if available
-)
-
-st.sidebar.header("2. Timeframe")
-period_option = st.sidebar.select_slider(
-    "Test Duration:",
-    options=["1mo", "3mo", "6mo", "1y", "2y", "5y"],
-    value="6mo"
-)
-
-st.sidebar.header("3. Setup")
-cash = st.sidebar.number_input("Wallet Balance (₹)", 100, 10000000, 2000, step=100)
-sma_fast = st.sidebar.slider("Fast Trend", 3, 50, 9)
-sma_slow = st.sidebar.slider("Slow Trend", 10, 100, 21)
-rsi_limit = st.sidebar.slider("RSI Limit", 30, 90, 70)
-
-# --- 4. STRATEGY ---
-class BulkBuyStrategy(Strategy):
+# --- 4. STRATEGY CLASS ---
+class TrendStrategy(Strategy):
+    fast_ma = 9
+    slow_ma = 21
+    rsi_limit = 60 # Stricter default
     def init(self):
-        self.sma1 = self.I(ta.sma, pd.Series(self.data.Close), length=sma_fast)
-        self.sma2 = self.I(ta.sma, pd.Series(self.data.Close), length=sma_slow)
+        self.sma1 = self.I(ta.sma, pd.Series(self.data.Close), length=self.fast_ma)
+        self.sma2 = self.I(ta.sma, pd.Series(self.data.Close), length=self.slow_ma)
         self.rsi = self.I(ta.rsi, pd.Series(self.data.Close), length=14)
-
     def next(self):
-        if crossover(self.sma1, self.sma2) and self.rsi < rsi_limit:
+        if crossover(self.sma1, self.sma2) and self.rsi < self.rsi_limit:
             self.buy(size=0.99)
         elif crossover(self.sma2, self.sma1):
             self.position.close()
 
-def get_market_data(ticker, period):
-    interval = "1h" if period in ["1mo", "3mo"] else "1d"
-    data = yf.download(ticker, period=period, interval=interval, progress=False)
-    if isinstance(data.columns, pd.MultiIndex):
-        data.columns = data.columns.get_level_values(0)
-    return data
-
-# --- 5. EXECUTION ---
-if st.button("🚀 Run Test"):
+# --- 5. LOGIC: PROCESS STOCK (Connects to trading_bot.py) ---
+def process_single_ticker(ticker, data_chunk_ignored, wallet, fast_ignored, slow_ignored, rsi_ignored):
+    """
+    Now we just ask the 'trading_bot' file to do the work.
+    We ignore the sliders for now to enforce the 'Strict' rules in the bot.
+    """
     try:
-        with st.spinner(f"Scanning {selected_ticker}..."):
-            df = get_market_data(selected_ticker, period_option)
-            
-            if df.empty:
-                st.error("❌ No data found.")
-            else:
-                current_price = df['Close'].iloc[-1]
-                max_shares = math.floor(cash / current_price)
-                
-                st.subheader(f"Analysis: {selected_ticker}")
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Current Price", f"₹{current_price:,.2f}")
-                
-                if max_shares < 1:
-                    c2.error("0 Shares")
-                    st.error(f"❌ You need ₹{current_price:.2f} minimum.")
-                else:
-                    c2.success(f"{max_shares} Shares potential")
-                    c3.metric("Wallet", f"₹{cash:,.2f}")
-
-                    bt = Backtest(df, BulkBuyStrategy, cash=cash, commission=.002)
-                    stats = bt.run()
-                    
-                    st.markdown("---")
-                    m1, m2, m3, m4 = st.columns(4)
-                    
-                    profit = stats['Return [%]']
-                    m1.metric("Profit/Loss", f"{profit:.2f}%", delta=f"{profit:.2f}%")
-                    
-                    win_rate = stats['Win Rate [%]']
-                    win_disp = "0% (No Trades)" if pd.isna(win_rate) else f"{win_rate:.2f}%"
-                    m2.metric("Win Rate", win_disp)
-                    
-                    m3.metric("Final Value", f"₹{stats['Equity Final [$]']:,.2f}")
-                    m4.metric("Risk", f"{stats['Max. Drawdown [%]']:.2f}%")
-
-                    st.subheader(f"Performance ({period_option})")
-                    bt.plot(open_browser=False, filename='plot.html')
-                    with open('plot.html', 'r', encoding='utf-8') as f:
-                        components.html(f.read(), height=700, scrolling=True)
-
+        # We pass the Ticker and Wallet Size to the bot
+        # The bot downloads its own fresh data to be safe
+        result = bot.analyze_ticker_precision(ticker, wallet)
+        return result
     except Exception as e:
-        st.error(f"Error: {e}")
+        return None
+
+# --- 6. SESSION STATE ---
+if 'page' not in st.session_state: st.session_state.page = "scanner"
+if 'selected_ticker' not in st.session_state: st.session_state.selected_ticker = None
+
+def set_ticker(ticker):
+    st.session_state.selected_ticker = ticker
+    st.session_state.page = "details"
+
+def go_home():
+    st.session_state.page = "scanner"
+    st.session_state.selected_ticker = None
+
+# --- 7. SIDEBAR ---
+with st.sidebar:
+    st.header("🦅 Precision Scanner")
+    
+    region = st.selectbox("1. Select Market", ["🇮🇳 India (NSE)", "🇺🇸 USA (S&P 500)"])
+    wallet = st.number_input("2. Wallet Size (Max Stock Price)", value=100, step=50)
+    batch_size = st.slider("Sample Size", 50, 300, 100)
+    
+    st.divider()
+    st.caption("Strategy Settings (Strict)")
+    sma_fast = st.slider("Fast Trend", 5, 50, 9)
+    sma_slow = st.slider("Slow Trend", 20, 200, 21)
+    # Default RSI lowered to 60 for higher safety
+    rsi_limit = st.slider("RSI Limit", 40, 80, 60)
+    
+    if st.button("🔎 START PRECISION SCAN", type="primary"):
+        st.session_state.scan_requested = True
+
+# --- 8. PAGE 1: SCANNER ---
+if st.session_state.page == "scanner":
+    st.title(f"Live Scanner: {region}")
+    
+    if st.session_state.get('scan_requested', False):
+        
+        with st.spinner("Fetching Official Market List..."):
+            full_list = fetch_realtime_symbols(region)
+            
+        if not full_list:
+            st.error("Connection Error. Could not fetch list.")
+        else:
+            # Shuffle to find new opportunities
+            random.shuffle(full_list)
+            scan_list = full_list[:batch_size]
+            
+            st.info(f"Analyzing {len(scan_list)} stocks with high-precision filters...")
+            
+            # Batch Download (Slower but accurate)
+            results = []
+            progress = st.progress(0)
+            status_text = st.empty()
+            
+            with st.spinner("Downloading High-Res Data..."):
+                full_data = yf.download(scan_list, period="6mo", group_by='ticker', progress=False)
+            
+            total = len(scan_list)
+            for i, ticker in enumerate(scan_list):
+                try:
+                    if len(scan_list) > 1:
+                        if ticker in full_data.columns.levels[0]:
+                            stock_df = full_data[ticker]
+                        else: continue
+                    else: stock_df = full_data
+                    
+                    data = process_single_ticker(ticker, stock_df, wallet, sma_fast, sma_slow, rsi_limit)
+                    if data: results.append(data)
+                    
+                    status_text.text(f"Checking {i+1}/{total}: {ticker}...")
+                    progress.progress((i+1)/total)
+                except: pass
+            
+            progress.empty()
+            status_text.empty()
+
+            if not results:
+                st.warning("😕 No stocks found. This is normal for 'High Precision' mode. Try increasing Wallet size or RSI limit.")
+            else:
+                results.sort(key=lambda x: x['Status'], reverse=True)
+                st.success(f"🎉 Found {len(results)} high-quality trades!")
+                
+                for i in range(0, len(results), 3):
+                    cols = st.columns(3)
+                    for j in range(3):
+                        if i + j < len(results):
+                            item = results[i+j]
+                            with cols[j]:
+                                with st.container(border=True):
+                                    c1, c2 = st.columns([2, 1])
+                                    c1.metric(item['Ticker'], f"₹{item['Price']:.2f}")
+                                    c2.markdown(f"**{item['Status']}**")
+                                    
+                                    chart = make_sparkline(item['Chart'], item['Color'])
+                                    st.altair_chart(chart, use_container_width=True)
+                                    
+                                    st.caption(f"RSI: {item['RSI']:.1f} | Buy: {item['Shares']} Shares")
+                                    st.button(f"Analyze {item['Ticker']}", key=f"btn_{item['Ticker']}", on_click=set_ticker, args=(item['Ticker'],))
+
+# --- 9. PAGE 2: DETAILS ---
+elif st.session_state.page == "details":
+    ticker = st.session_state.selected_ticker
+    st.button("← Back to Results", on_click=go_home)
+    st.title(f"Deep Dive: {ticker}")
+    
+    with st.spinner(f"Simulating Strategy..."):
+        try:
+            df = yf.download(ticker, period="2y", progress=False)
+            if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+            df = df.dropna()
+            
+            if df.empty: st.error("No Data.")
+            else:
+                TrendStrategy.fast_ma = sma_fast
+                TrendStrategy.slow_ma = sma_slow
+                TrendStrategy.rsi_limit = rsi_limit
+                # Simulate with 10x wallet to show potential return
+                bt = Backtest(df, TrendStrategy, cash=wallet*10, commission=.002)
+                stats = bt.run()
+                
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Net Profit", f"{stats['Return [%]']:.2f}%", delta=f"{stats['Return [%]']:.2f}%")
+                m2.metric("Win Rate", f"{stats['Win Rate [%]']:.2f}%")
+                m3.metric("Final Equity", f"₹{stats['Equity Final [$]']:,.2f}")
+                m4.metric("Max Drawdown", f"{stats['Max. Drawdown [%]']:.2f}%")
+                
+                st.subheader("Trade Visualization")
+                bt.plot(open_browser=False, filename='plot.html')
+                with open('plot.html', 'r', encoding='utf-8') as f:
+                    components.html(f.read(), height=600, scrolling=True)
+        except Exception as e: st.error(str(e))
