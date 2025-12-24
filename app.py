@@ -38,26 +38,22 @@ if 'scan_index' not in st.session_state: st.session_state.scan_index = 0
 # --- NAVIGATION ---
 def go_to_details(ticker):
     st.session_state.selected_ticker = ticker
-    st.session_state.is_scanning = False # Stop scanning
+    st.session_state.is_scanning = False 
     st.session_state.page = "details"
 
 def go_home():
     st.session_state.page = "scanner"
 
-# --- STRATEGY FOR BACKTESTING ---
+# --- STRATEGY ---
 class TrendStrategy(Strategy):
     fast_ma = 9
     slow_ma = 21
-    
     def init(self):
         self.sma1 = self.I(lambda x: pd.Series(x).rolling(self.fast_ma).mean(), self.data.Close)
         self.sma2 = self.I(lambda x: pd.Series(x).rolling(self.slow_ma).mean(), self.data.Close)
-    
     def next(self):
-        if crossover(self.sma1, self.sma2):
-            self.buy()
-        elif crossover(self.sma2, self.sma1):
-            self.position.close()
+        if crossover(self.sma1, self.sma2): self.buy()
+        elif crossover(self.sma2, self.sma1): self.position.close()
 
 # --- HELPERS ---
 def make_sparkline(data_series, color_hex):
@@ -85,7 +81,6 @@ def fetch_realtime_symbols(region):
 # --- PAGE 1: SCANNER ---
 if st.session_state.page == "scanner":
     
-    # Sidebar
     with st.sidebar:
         st.header("🦅 Infinity Scanner")
         region = st.selectbox("Market", ["🇮🇳 India (NSE)"])
@@ -105,9 +100,9 @@ if st.session_state.page == "scanner":
         for log in reversed(st.session_state.scan_logs[-10:]):
             st.text(log)
 
-    st.title("Live Market Feed")
+    st.title("Live Market Feed (Sorted by AI Score)")
 
-    # 1. RENDER RESULTS (Grid)
+    # 1. RENDER RESULTS
     if st.session_state.scanned_results:
         results = st.session_state.scanned_results
         for i in range(0, len(results), 3):
@@ -129,13 +124,12 @@ if st.session_state.page == "scanner":
                             
                             st.caption(f"Stop: {item['Stop_Loss']:.1f} | Target: {item['Take_Profit']:.1f}")
                             
-                            # THE FIX: Use on_click callback
                             st.button(f"Analyze {item['Ticker']}", 
                                       key=f"btn_{item['Ticker']}", 
                                       on_click=go_to_details, 
                                       args=(item['Ticker'],))
 
-    # 2. SCANNING LOGIC (Infinite Loop via Rerun)
+    # 2. SCANNING LOGIC
     if st.session_state.is_scanning:
         full_list = fetch_realtime_symbols(region)
         if st.session_state.scan_index >= len(full_list): st.session_state.scan_index = 0
@@ -147,41 +141,43 @@ if st.session_state.page == "scanner":
         st.session_state.scan_logs.append(f"{ticker}: {message}")
         
         if result:
-            # UNIQUE CHECK: Remove if exists, then add new to top
+            # Remove duplicate if exists
             st.session_state.scanned_results = [r for r in st.session_state.scanned_results if r['Ticker'] != ticker]
-            st.session_state.scanned_results.insert(0, result)
+            
+            # Add new result
+            st.session_state.scanned_results.append(result)
+            
+            # --- THE SORTING MAGIC ---
+            # Sort the list so highest AI_Score is always at index 0
+            st.session_state.scanned_results.sort(key=lambda x: x['AI_Score'], reverse=True)
             
         st.session_state.scan_index += 1
         time.sleep(0.05)
         st.rerun()
 
-# --- PAGE 2: FULL ANALYSIS ---
+# --- PAGE 2: DETAILS ---
 elif st.session_state.page == "details":
     ticker = st.session_state.selected_ticker
     st.button("← Back to Feed", on_click=go_home)
     st.title(f"Deep Analysis: {ticker}")
     
-    import yfinance as yf # Import locally to avoid scope issues
+    import yfinance as yf
     
     with st.spinner("Running 2-Year Backtest Simulation..."):
         try:
-            # 1. Get Data
             df = yf.download(ticker, period="2y", progress=False)
             if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
             df = df.dropna()
             
-            # 2. Run Backtest
             bt = Backtest(df, TrendStrategy, cash=100000, commission=.002)
             stats = bt.run()
             
-            # 3. Show Metrics
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Net Profit", f"{stats['Return [%]']:.2f}%", delta=f"{stats['Return [%]']:.2f}%")
             m2.metric("Win Rate", f"{stats['Win Rate [%]']:.2f}%")
             m3.metric("Trades", int(stats['# Trades']))
             m4.metric("Max Drawdown", f"{stats['Max. Drawdown [%]']:.2f}%")
             
-            # 4. Interactive Plot
             st.subheader("Interactive Strategy Chart")
             bt.plot(open_browser=False, filename='plot.html')
             with open('plot.html', 'r', encoding='utf-8') as f:
