@@ -51,14 +51,8 @@ def fetch_intraday_data(ticker):
 def calculate_intraday_indicators(df):
     df = df.copy()
     
-    # --- 1. PATTERN RECOGNITION (The "Eyes") ---
-    # We detect specific bullish reversal patterns
-    # These functions return non-zero values if a pattern is found
-    
-    # CDL_HAMMER: Sellers gave up
+    # --- 1. PATTERN RECOGNITION ---
     df['CDL_HAMMER'] = ta.cdl_pattern(df['Open'], df['High'], df['Low'], df['Close'], name="hammer")['CDL_HAMMER']
-    
-    # CDL_ENGULFING: Buyers overwhelmed sellers
     df['CDL_ENGULFING'] = ta.cdl_pattern(df['Open'], df['High'], df['Low'], df['Close'], name="engulfing")['CDL_ENGULFING']
     
     # --- 2. QUANT INDICATORS ---
@@ -83,13 +77,12 @@ def calculate_intraday_indicators(df):
     df['Vol_SMA'] = ta.sma(df['Volume'], length=20)
     df['RVOL'] = df['Volume'] / df['Vol_SMA']
 
-    # --- 3. ML FEATURES (Including Patterns) ---
+    # --- 3. ML FEATURES ---
     df['VWAP_Dist'] = (df['Close'] - df['VWAP']) / df['VWAP']
     df['SMA_Dist'] = (df['Close'] - df['SMA_Slow']) / df['SMA_Slow']
     df['RSI_Norm'] = df['RSI'] / 100
     df['RVOL_Norm'] = df['RVOL']
     
-    # Normalize Patterns: Convert huge numbers to just 0 or 1 for the AI
     df['Pat_Hammer'] = df['CDL_HAMMER'].apply(lambda x: 1 if x != 0 else 0)
     df['Pat_Engulfing'] = df['CDL_ENGULFING'].apply(lambda x: 1 if x != 0 else 0)
     
@@ -98,10 +91,6 @@ def calculate_intraday_indicators(df):
 def train_and_predict(df):
     try:
         data = df.copy().dropna()
-        
-        # --- SMART TARGET (Volatility Adjusted) ---
-        # Instead of fixed 0.3%, we ask: "Did price move more than 0.5x ATR?"
-        # This adapts to the stock's personality.
         future_close = data['Close'].shift(-4)
         current_close = data['Close']
         target_move = 0.5 * data['ATR']
@@ -137,7 +126,10 @@ def analyze_ticker_precision(ticker, wallet_size):
         last = df.iloc[-1]
         price = last['Close']
         
-        if price > wallet_size: return None, "Expensive"
+        # NOTE: Wallet Size is now treated as "Account Balance" for risk calc
+        # Max Price Filter (e.g. don't trade stocks > 5000)
+        if price > 5000: return None, "Price too high" 
+        
         if last['Volume'] < 50: return None, "Low Liquidity"
 
         # FILTERS
@@ -151,12 +143,11 @@ def analyze_ticker_precision(ticker, wallet_size):
             
             status = "✅ UPTREND"
             
-            # PATTERN BOOSTER: If we see a pattern, we trust the AI more
             has_pattern = (last['Pat_Hammer'] == 1) or (last['Pat_Engulfing'] == 1)
             
             if (ai_score > 75) and (last['RVOL'] > 1.5):
                 status = "🔥 STRONG BUY"
-                if has_pattern: status = "💎 DIAMOND SETUP" # New Rare Badge
+                if has_pattern: status = "💎 DIAMOND SETUP"
                 
             elif ai_score > 60:
                 status = "🦅 AI CONFIRMED"
@@ -164,10 +155,31 @@ def analyze_ticker_precision(ticker, wallet_size):
             sparkline = df['Close'].tail(48).reset_index(drop=True)
             color = "#00FF00" if sparkline.iloc[-1] >= sparkline.iloc[0] else "#FF4B4B"
 
+            # --- RISK MANAGEMENT (The Upgrade) ---
+            atr = last['ATR']
+            
+            # 1. Calculate Stop Loss based on volatility
             chan_stop = last['Chandelier_Exit']
             hard_stop = price * 0.985 
-            stop_loss = max(chan_stop, hard_stop) 
-            take_profit = price + (3.0 * last['ATR'])
+            stop_loss = max(chan_stop, hard_stop)
+            
+            # 2. Risk Calculation (Fixed Fractional Position Sizing)
+            # We want to risk MAX 1% of the wallet_size per trade
+            risk_per_trade = wallet_size * 0.01 
+            risk_per_share = price - stop_loss
+            
+            if risk_per_share <= 0: risk_per_share = price * 0.01 # Safety net
+            
+            # "Golden Share Count" = Risk Amount / Risk Per Share
+            safe_shares = int(risk_per_trade / risk_per_share)
+            
+            # Cap shares so we don't spend more than 20% of account on one stock (Diversification)
+            max_capital_per_trade = wallet_size * 0.20
+            max_shares_by_capital = int(max_capital_per_trade / price)
+            
+            final_shares = min(safe_shares, max_shares_by_capital)
+
+            take_profit = price + (3.0 * atr)
 
             result = {
                 "Ticker": ticker,
@@ -177,7 +189,7 @@ def analyze_ticker_precision(ticker, wallet_size):
                 "Status": status,
                 "Chart": sparkline,
                 "Color": color,
-                "Shares": int(wallet_size // price),
+                "Shares": final_shares, # Updated to Smart Sizing
                 "Stop_Loss": stop_loss,
                 "Take_Profit": take_profit
             }
