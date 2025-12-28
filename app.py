@@ -10,7 +10,7 @@ from backtesting.lib import crossover
 import streamlit.components.v1 as components
 
 # --- CONFIG ---
-st.set_page_config(layout="wide", page_title="Stock Algo", page_icon="📈")
+st.set_page_config(layout="wide", page_title="AI Infinity Scanner", page_icon="🦅")
 
 st.markdown("""
 <style>
@@ -34,6 +34,7 @@ if 'is_scanning' not in st.session_state: st.session_state.is_scanning = False
 if 'scanned_results' not in st.session_state: st.session_state.scanned_results = []
 if 'scan_logs' not in st.session_state: st.session_state.scan_logs = []
 if 'scan_index' not in st.session_state: st.session_state.scan_index = 0
+if 'currency_symbol' not in st.session_state: st.session_state.currency_symbol = "₹"
 
 # --- NAVIGATION ---
 def go_to_details(ticker):
@@ -69,22 +70,54 @@ def make_sparkline(data_series, color_hex):
 @st.cache_data(ttl=3600)
 def fetch_realtime_symbols(region):
     try:
+        # 1. INDIA (NSE)
         if region == "India (NSE)":
             url = "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv"
             headers = {"User-Agent": "Mozilla/5.0"}
             s = requests.get(url, headers=headers).content
             df = pd.read_csv(io.StringIO(s.decode('utf-8')))
             return [f"{x}.NS" for x in df['SYMBOL'].tolist()]
-    except: return []
+
+        # 2. USA (S&P 500)
+        elif region == "USA (S&P 500)":
+            url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
+            tables = pd.read_html(url)
+            df = tables[0] # The first table usually contains the list
+            # Yahoo Finance uses '-' instead of '.' for tickers like BRK.B -> BRK-B
+            symbols = df['Symbol'].str.replace('.', '-', regex=False).tolist()
+            return symbols
+
+        # 3. UK (FTSE 100)
+        elif region == "UK (FTSE 100)":
+            url = 'https://en.wikipedia.org/wiki/FTSE_100_Index'
+            tables = pd.read_html(url)
+            # Look for the table with 'Ticker' column
+            for table in tables:
+                if 'Ticker' in table.columns:
+                    # Append .L for London Stock Exchange tickers
+                    return [f"{x}.L" for x in table['Ticker'].tolist()]
+            return []
+            
+    except Exception as e:
+        st.error(f"Error fetching symbols: {e}")
+        return []
     return []
 
 # --- PAGE 1: SCANNER ---
 if st.session_state.page == "scanner":
     
     with st.sidebar:
-        st.header("Scanner")
-        region = st.selectbox("Market", ["India (NSE)"])
-        wallet = st.number_input("Max Price (₹)", value=2000, step=100)
+        st.header("🦅 Infinity Scanner")
+        
+        # MARKET SELECTOR
+        region = st.selectbox("Market", ["India (NSE)", "USA (S&P 500)", "UK (FTSE 100)"])
+        
+        # Set Currency Symbol based on selection
+        if "India" in region: st.session_state.currency_symbol = "₹"
+        elif "USA" in region: st.session_state.currency_symbol = "$"
+        elif "UK" in region: st.session_state.currency_symbol = "£"
+        
+        wallet = st.number_input(f"Max Price ({st.session_state.currency_symbol})", value=2000, step=100)
         
         col1, col2 = st.columns(2)
         if col1.button("▶ START", type="primary"):
@@ -100,7 +133,7 @@ if st.session_state.page == "scanner":
         for log in reversed(st.session_state.scan_logs[-10:]):
             st.text(log)
 
-    st.title("Live Stocks")
+    st.title("Live Market Feed")
 
     # 1. RENDER RESULTS
     if st.session_state.scanned_results:
@@ -113,7 +146,8 @@ if st.session_state.page == "scanner":
                     with cols[j]:
                         with st.container(border=True):
                             c1, c2 = st.columns([2, 1])
-                            c1.metric(item['Ticker'], f"₹{item['Price']:.2f}")
+                            curr = st.session_state.currency_symbol
+                            c1.metric(item['Ticker'], f"{curr}{item['Price']:.2f}")
                             
                             score_color = "green" if item['AI_Score'] > 60 else "orange"
                             c2.markdown(f"**{item['Status']}**")
@@ -122,8 +156,12 @@ if st.session_state.page == "scanner":
                             chart = make_sparkline(item['Chart'], item['Color'])
                             st.altair_chart(chart, use_container_width=True)
                             
-                            st.caption(f"Stop: {item['Stop_Loss']:.1f} | Target: {item['Take_Profit']:.1f}")
+                            st.caption(f"Stop: {item['Stop_Loss']:.2f} | Target: {item['Take_Profit']:.2f}")
                             
+                            # Badge for Diamond Setup
+                            if "DIAMOND" in item['Status']:
+                                st.info("💎 DIAMOND SETUP DETECTED")
+
                             st.button(f"Analyze {item['Ticker']}", 
                                       key=f"btn_{item['Ticker']}", 
                                       on_click=go_to_details, 
@@ -132,28 +170,30 @@ if st.session_state.page == "scanner":
     # 2. SCANNING LOGIC
     if st.session_state.is_scanning:
         full_list = fetch_realtime_symbols(region)
-        if st.session_state.scan_index >= len(full_list): st.session_state.scan_index = 0
-            
-        ticker = full_list[st.session_state.scan_index]
-        st.toast(f"Scanning: {ticker}...")
         
-        result, message = bot.analyze_ticker_precision(ticker, wallet)
-        st.session_state.scan_logs.append(f"{ticker}: {message}")
-        
-        if result:
-            # Remove duplicate if exists
-            st.session_state.scanned_results = [r for r in st.session_state.scanned_results if r['Ticker'] != ticker]
+        if not full_list:
+            st.error("Could not fetch symbols. Check connection.")
+            st.session_state.is_scanning = False
+        else:
+            if st.session_state.scan_index >= len(full_list): st.session_state.scan_index = 0
+                
+            ticker = full_list[st.session_state.scan_index]
+            st.toast(f"Scanning: {ticker}...")
             
-            # Add new result
-            st.session_state.scanned_results.append(result)
+            # Analyze
+            result, message = bot.analyze_ticker_precision(ticker, wallet)
+            st.session_state.scan_logs.append(f"{ticker}: {message}")
             
-            # --- THE SORTING MAGIC ---
-            # Sort the list so highest AI_Score is always at index 0
-            st.session_state.scanned_results.sort(key=lambda x: x['AI_Score'], reverse=True)
-            
-        st.session_state.scan_index += 1
-        time.sleep(0.05)
-        st.rerun()
+            if result:
+                # Remove duplicates
+                st.session_state.scanned_results = [r for r in st.session_state.scanned_results if r['Ticker'] != ticker]
+                st.session_state.scanned_results.append(result)
+                # Sort: Strong Buy first, then by AI Score
+                st.session_state.scanned_results.sort(key=lambda x: (x['Status'] == "🔥 STRONG BUY", x['AI_Score']), reverse=True)
+                
+            st.session_state.scan_index += 1
+            time.sleep(0.05)
+            st.rerun()
 
 # --- PAGE 2: DETAILS ---
 elif st.session_state.page == "details":
