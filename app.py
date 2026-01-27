@@ -10,7 +10,7 @@ from backtesting.lib import crossover
 import streamlit.components.v1 as components
 
 # --- CONFIG ---
-st.set_page_config(layout="wide", page_title="AI Infinity Scanner", page_icon="🦅")
+st.set_page_config(layout="wide", page_title="Stock Algo", page_icon="📈")
 
 st.markdown("""
 <style>
@@ -106,7 +106,7 @@ def fetch_realtime_symbols(region):
 if st.session_state.page == "scanner":
     
     with st.sidebar:
-        st.header("🦅 Infinity Scanner")
+        st.header("Scanner")
         
         region = st.selectbox("Market", ["🇮🇳 India (NSE)", "🇺🇸 USA (S&P 500)", "🇬🇧 UK (FTSE 100)"])
         
@@ -135,7 +135,7 @@ if st.session_state.page == "scanner":
         for log in reversed(st.session_state.scan_logs[-10:]):
             st.text(log)
 
-    st.title("Live Market Feed (Sorted by AI Score)")
+    st.title("Live Market Feed")
 
     # 1. RENDER RESULTS
     if st.session_state.scanned_results:
