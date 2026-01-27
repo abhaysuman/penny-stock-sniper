@@ -35,7 +35,6 @@ if 'scanned_results' not in st.session_state: st.session_state.scanned_results =
 if 'scan_logs' not in st.session_state: st.session_state.scan_logs = []
 if 'scan_index' not in st.session_state: st.session_state.scan_index = 0
 if 'currency_symbol' not in st.session_state: st.session_state.currency_symbol = "₹"
-# New counters to track progress
 if 'total_scanned' not in st.session_state: st.session_state.total_scanned = 0
 if 'total_rejected' not in st.session_state: st.session_state.total_rejected = 0
 
@@ -72,11 +71,15 @@ def make_sparkline(data_series, color_hex):
 
 @st.cache_data(ttl=3600)
 def fetch_realtime_symbols(region):
+    # FAKE BROWSER HEADER (Crucial to bypass 403 Forbidden Error)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+    
     try:
         # 1. INDIA (NSE)
         if region == "🇮🇳 India (NSE)":
             url = "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv"
-            headers = {"User-Agent": "Mozilla/5.0"}
             s = requests.get(url, headers=headers).content
             df = pd.read_csv(io.StringIO(s.decode('utf-8')))
             return [f"{x}.NS" for x in df['SYMBOL'].tolist()]
@@ -84,7 +87,10 @@ def fetch_realtime_symbols(region):
         # 2. USA (S&P 500)
         elif region == "🇺🇸 USA (S&P 500)":
             url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
-            tables = pd.read_html(url)
+            # Request page first with headers
+            response = requests.get(url, headers=headers)
+            # Use io.StringIO to parse the text content
+            tables = pd.read_html(io.StringIO(response.text))
             df = tables[0]
             symbols = df['Symbol'].str.replace('.', '-', regex=False).tolist()
             return symbols
@@ -92,11 +98,13 @@ def fetch_realtime_symbols(region):
         # 3. UK (FTSE 100)
         elif region == "🇬🇧 UK (FTSE 100)":
             url = 'https://en.wikipedia.org/wiki/FTSE_100_Index'
-            tables = pd.read_html(url)
+            response = requests.get(url, headers=headers)
+            tables = pd.read_html(io.StringIO(response.text))
             for table in tables:
                 if 'Ticker' in table.columns:
                     return [f"{x}.L" for x in table['Ticker'].tolist()]
             return []
+            
     except Exception as e:
         st.error(f"Error fetching symbols: {e}")
         return []
@@ -120,7 +128,7 @@ if st.session_state.page == "scanner":
         if col1.button("▶ START", type="primary"):
             st.session_state.is_scanning = True
             st.session_state.scan_logs = []
-            st.session_state.total_scanned = 0 # Reset counters
+            st.session_state.total_scanned = 0
             st.session_state.total_rejected = 0
             st.rerun()
         if col2.button("⏹ STOP"):
@@ -159,7 +167,7 @@ if st.session_state.page == "scanner":
                             st.altair_chart(chart, use_container_width=True)
                             
                             st.caption(f"Stop: {item['Stop_Loss']:.2f} | Target: {item['Take_Profit']:.2f}")
-                            st.caption(f"Position: {item['Shares']} shares")
+                            st.caption(f"Pos: {item['Shares']} shares")
                             
                             if "DIAMOND" in item['Status']:
                                 st.info("💎 DIAMOND SETUP")
@@ -169,7 +177,7 @@ if st.session_state.page == "scanner":
                                       on_click=go_to_details, 
                                       args=(item['Ticker'],))
 
-    # 2. SCANNING LOGIC (BATCH MODE)
+    # 2. SCANNING LOGIC
     if st.session_state.is_scanning:
         full_list = fetch_realtime_symbols(region)
         
@@ -177,7 +185,6 @@ if st.session_state.page == "scanner":
             st.error("Could not fetch symbols. Check connection.")
             st.session_state.is_scanning = False
         else:
-            # --- BATCH SCANNING LOOP ---
             batch_size = 5 
             
             for _ in range(batch_size):
@@ -185,7 +192,6 @@ if st.session_state.page == "scanner":
                     st.session_state.scan_index = 0
                 
                 ticker = full_list[st.session_state.scan_index]
-                
                 st.session_state.total_scanned += 1
                 
                 try:
@@ -196,7 +202,6 @@ if st.session_state.page == "scanner":
                         st.session_state.scanned_results = [r for r in st.session_state.scanned_results if r['Ticker'] != ticker]
                         st.session_state.scanned_results.append(result)
                         st.session_state.scanned_results.sort(key=lambda x: (x['Status'] == "🔥 STRONG BUY", x['AI_Score']), reverse=True)
-                        st.toast(f"Found Gem: {ticker}!")
                     else:
                         st.session_state.total_rejected += 1
                         
@@ -205,7 +210,6 @@ if st.session_state.page == "scanner":
                 
                 st.session_state.scan_index += 1
             
-            st.toast(f"Scanning... ({st.session_state.total_scanned} analyzed)")
             time.sleep(0.01)
             st.rerun()
 
