@@ -10,7 +10,7 @@ from backtesting.lib import crossover
 import streamlit.components.v1 as components
 
 # --- CONFIG ---
-st.set_page_config(layout="wide", page_title="Stock Algo", page_icon="📈")
+st.set_page_config(layout="wide", page_title="AI Infinity Scanner", page_icon="🦅")
 
 st.markdown("""
 <style>
@@ -47,17 +47,6 @@ def go_to_details(ticker):
 def go_home():
     st.session_state.page = "scanner"
 
-# --- STRATEGY ---
-class TrendStrategy(Strategy):
-    fast_ma = 9
-    slow_ma = 21
-    def init(self):
-        self.sma1 = self.I(lambda x: pd.Series(x).rolling(self.fast_ma).mean(), self.data.Close)
-        self.sma2 = self.I(lambda x: pd.Series(x).rolling(self.slow_ma).mean(), self.data.Close)
-    def next(self):
-        if crossover(self.sma1, self.sma2): self.buy()
-        elif crossover(self.sma2, self.sma1): self.position.close()
-
 # --- HELPERS ---
 def make_sparkline(data_series, color_hex):
     df = data_series.reset_index(drop=True).to_frame(name='price')
@@ -77,25 +66,20 @@ def fetch_realtime_symbols(region):
     }
     
     try:
-        # 1. INDIA (NSE)
         if region == "🇮🇳 India (NSE)":
             url = "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv"
             s = requests.get(url, headers=headers).content
             df = pd.read_csv(io.StringIO(s.decode('utf-8')))
             return [f"{x}.NS" for x in df['SYMBOL'].tolist()]
 
-        # 2. USA (S&P 500)
         elif region == "🇺🇸 USA (S&P 500)":
             url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
-            # Request page first with headers
             response = requests.get(url, headers=headers)
-            # Use io.StringIO to parse the text content
             tables = pd.read_html(io.StringIO(response.text))
             df = tables[0]
             symbols = df['Symbol'].str.replace('.', '-', regex=False).tolist()
             return symbols
 
-        # 3. UK (FTSE 100)
         elif region == "🇬🇧 UK (FTSE 100)":
             url = 'https://en.wikipedia.org/wiki/FTSE_100_Index'
             response = requests.get(url, headers=headers)
@@ -114,7 +98,7 @@ def fetch_realtime_symbols(region):
 if st.session_state.page == "scanner":
     
     with st.sidebar:
-        st.header("Scanner")
+        st.header("🦅 Infinity Scanner")
         
         region = st.selectbox("Market", ["🇮🇳 India (NSE)", "🇺🇸 USA (S&P 500)", "🇬🇧 UK (FTSE 100)"])
         
@@ -123,6 +107,11 @@ if st.session_state.page == "scanner":
         elif "UK" in region: st.session_state.currency_symbol = "£"
         
         wallet = st.number_input(f"Account Balance ({st.session_state.currency_symbol})", value=100000, step=1000)
+        
+        # --- NEW SLIDER ---
+        st.divider()
+        strictness = st.slider("AI Strictness", min_value=1, max_value=10, value=4, help="1=Show Everything, 10=Only Perfect Gems")
+        st.divider()
         
         col1, col2 = st.columns(2)
         if col1.button("▶ START", type="primary"):
@@ -135,10 +124,8 @@ if st.session_state.page == "scanner":
             st.session_state.is_scanning = False
             st.rerun()
             
-        st.divider()
         st.caption(f"📊 Scanned: {st.session_state.total_scanned}")
         st.caption(f"❌ Rejected: {st.session_state.total_rejected}")
-        st.divider()
         st.subheader("📝 Live Logs")
         for log in reversed(st.session_state.scan_logs[-10:]):
             st.text(log)
@@ -195,7 +182,8 @@ if st.session_state.page == "scanner":
                 st.session_state.total_scanned += 1
                 
                 try:
-                    result, message = bot.analyze_ticker_precision(ticker, wallet)
+                    # PASS STRICTNESS HERE
+                    result, message = bot.analyze_ticker_precision(ticker, wallet, strictness)
                     st.session_state.scan_logs.append(f"{ticker}: {message}")
                     
                     if result:
@@ -206,7 +194,8 @@ if st.session_state.page == "scanner":
                         st.session_state.total_rejected += 1
                         
                 except Exception as e:
-                    st.session_state.scan_logs.append(f"{ticker}: Error {str(e)}")
+                    # Logs error but doesn't crash app
+                    st.session_state.scan_logs.append(f"{ticker}: Error")
                 
                 st.session_state.scan_index += 1
             
@@ -219,6 +208,17 @@ elif st.session_state.page == "details":
     st.button("← Back to Feed", on_click=go_home)
     st.title(f"Deep Analysis: {ticker}")
     
+    # Simple Strategy Class needed here for backtesting page
+    class TrendStrategy(Strategy):
+        fast_ma = 9
+        slow_ma = 21
+        def init(self):
+            self.sma1 = self.I(lambda x: pd.Series(x).rolling(self.fast_ma).mean(), self.data.Close)
+            self.sma2 = self.I(lambda x: pd.Series(x).rolling(self.slow_ma).mean(), self.data.Close)
+        def next(self):
+            if crossover(self.sma1, self.sma2): self.buy()
+            elif crossover(self.sma2, self.sma1): self.position.close()
+
     import yfinance as yf
     
     with st.spinner("Running 2-Year Backtest Simulation..."):

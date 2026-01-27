@@ -4,19 +4,12 @@ import pandas_ta as ta
 from sklearn.ensemble import RandomForestClassifier
 import numpy as np
 
-# --- CONFIGURATION ---
+# --- CONFIGURATION (BASE) ---
 class BotConfig:
-    # Daily Chart Settings
+    # These are now just baselines, we adjust them dynamically
     MACRO_SMA = 50     
-    MACRO_RSI_MAX = 85 # Relaxed from 80 to allow stronger momentum
-
-    # Intraday Chart Settings
     SMA_FAST = 9
     SMA_SLOW = 21
-    RSI_MIN = 30       
-    RSI_MAX = 80       # Relaxed upper limit
-    ADX_THRESHOLD = 20 # Relaxed from 25 to catch early trends
-    CHOP_THRESHOLD = 60 # Relaxed from 50 (Crucial for seeing more results)
 
 # --- HELPER: FETCH DAILY DATA ---
 def check_macro_trend(ticker):
@@ -25,14 +18,16 @@ def check_macro_trend(ticker):
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         
-        if len(df) < 50: return False, "No Daily Data"
+        if df is None or len(df) < 50: return False, "No Daily Data"
 
         current_price = df['Close'].iloc[-1]
         sma_50 = ta.sma(df['Close'], length=BotConfig.MACRO_SMA).iloc[-1]
         
-        # Relaxed Filter: Allow if price is > 98% of SMA (Close enough)
-        # This prevents rejecting a good stock just because it dipped slightly
-        if current_price < (sma_50 * 0.98): return False, "❌ Downtrend"
+        # Super safe check
+        if pd.isna(current_price) or pd.isna(sma_50): return False, "Data Error"
+
+        # Allow if price is near SMA (Loose) or above (Strict)
+        if current_price < (sma_50 * 0.95): return False, "❌ Downtrend"
 
         return True, "OK"
     except: return False, "Data Error"
@@ -51,24 +46,21 @@ def fetch_intraday_data(ticker):
 def calculate_intraday_indicators(df):
     df = df.copy()
     
-    # Patterns
-    df['CDL_HAMMER'] = ta.cdl_pattern(df['Open'], df['High'], df['Low'], df['Close'], name="hammer")['CDL_HAMMER']
-    df['CDL_ENGULFING'] = ta.cdl_pattern(df['Open'], df['High'], df['Low'], df['Close'], name="engulfing")['CDL_ENGULFING']
-    
-    # Indicators
+    # Error Handling for indicators
     try:
         df['CHOP'] = ta.chop(df['High'], df['Low'], df['Close'], length=14)
     except: df['CHOP'] = 50
 
     df['VWAP'] = ta.vwap(df['High'], df['Low'], df['Close'], df['Volume'])
-    
-    df['Force_Index'] = df['Close'].diff(1) * df['Volume']
-    df['Force_SMA'] = ta.sma(df['Force_Index'], length=13)
-
     df['SMA_Fast'] = ta.sma(df['Close'], length=BotConfig.SMA_FAST)
     df['SMA_Slow'] = ta.sma(df['Close'], length=BotConfig.SMA_SLOW)
     df['RSI'] = ta.rsi(df['Close'], length=14)
-    df['ADX'] = ta.adx(df['High'], df['Low'], df['Close'], length=14).iloc[:, 0]
+    
+    adx = ta.adx(df['High'], df['Low'], df['Close'], length=14)
+    if adx is not None and not adx.empty:
+        df['ADX'] = adx.iloc[:, 0]
+    else:
+        df['ADX'] = 0
     
     df['ATR'] = ta.atr(df['High'], df['Low'], df['Close'], length=14)
     rolling_high = df['High'].rolling(22).max()
@@ -76,6 +68,10 @@ def calculate_intraday_indicators(df):
     
     df['Vol_SMA'] = ta.sma(df['Volume'], length=20)
     df['RVOL'] = df['Volume'] / df['Vol_SMA']
+
+    # Patterns
+    df['CDL_HAMMER'] = ta.cdl_pattern(df['Open'], df['High'], df['Low'], df['Close'], name="hammer")['CDL_HAMMER']
+    df['CDL_ENGULFING'] = ta.cdl_pattern(df['Open'], df['High'], df['Low'], df['Close'], name="engulfing")['CDL_ENGULFING']
 
     # ML Features
     df['VWAP_Dist'] = (df['Close'] - df['VWAP']) / df['VWAP']
@@ -108,11 +104,21 @@ def train_and_predict(df):
         return round(model.predict_proba(X_live)[0][1] * 100, 1)
     except: return 50.0
 
-def analyze_ticker_precision(ticker, wallet_size):
+def analyze_ticker_precision(ticker, wallet_size, strictness=5):
+    """
+    strictness (int): 1 (Loose) to 10 (Strict)
+    """
     try:
+        # 1. DYNAMIC THRESHOLDS BASED ON SLIDER
+        # Strictness 1: Score > 50, RVOL > 0.5
+        # Strictness 10: Score > 80, RVOL > 2.0
+        min_ai_score = 50 + (strictness * 3) # 53 to 83
+        min_rvol = 0.5 + (strictness * 0.15) # 0.65 to 2.0
+        max_chop = 70 - (strictness * 2)     # 68 (Loose) to 50 (Strict)
+        
         # MACRO CHECK
         is_healthy, reason = check_macro_trend(ticker)
-        if not is_healthy: return None, reason
+        if not is_healthy and strictness > 3: return None, reason
 
         # MICRO CHECK
         df = fetch_intraday_data(ticker)
@@ -122,67 +128,68 @@ def analyze_ticker_precision(ticker, wallet_size):
         last = df.iloc[-1]
         price = last['Close']
         
-        # Relaxed volume check to allow smaller caps
-        if last['Volume'] < 100: return None, "Low Liquidity"
+        # Safety checks for NaNs
+        if pd.isna(price) or pd.isna(last['RSI']): return None, "Bad Data"
+        
+        if last['Volume'] < (strictness * 10): return None, "Low Vol" # Dynamic volume filter
 
-        # FILTERS (Relaxed for visibility)
-        bullish_structure = (last['SMA_Fast'] > last['SMA_Slow'])
+        # FILTERS
+        # 1. Trend: Only check Moving Averages if strictness is high
+        bullish_structure = True
+        if strictness > 4:
+            bullish_structure = (last['SMA_Fast'] > last['SMA_Slow'])
         
-        # Relaxed Chop: Allow up to 60 (was 50)
-        not_choppy = last['CHOP'] < BotConfig.CHOP_THRESHOLD
+        # 2. Chop:
+        not_choppy = last['CHOP'] < max_chop
         
-        # Relaxed Volume: Just needs to be active, not necessarily explosive (0.8x avg)
-        has_volume = last['RVOL'] > 0.8 
+        # 3. Volume:
+        has_volume = last['RVOL'] > min_rvol
 
         if bullish_structure and not_choppy and has_volume:
             
             ai_score = train_and_predict(df)
             
-            status = "👀 WATCHLIST"
-            
-            # Badge Logic
-            has_pattern = (last['Pat_Hammer'] == 1) or (last['Pat_Engulfing'] == 1)
-            
-            if (ai_score > 70) and (last['RVOL'] > 1.2):
-                status = "🔥 STRONG BUY"
-                if has_pattern: status = "💎 DIAMOND SETUP"
-            elif ai_score > 55:
+            # THE DECISION MAKER
+            if ai_score >= min_ai_score:
                 status = "✅ UPTREND"
+                
+                # Badges
+                if ai_score > (min_ai_score + 10): status = "🔥 STRONG BUY"
+                if "STRONG" in status and (last['Pat_Hammer'] == 1 or last['Pat_Engulfing'] == 1):
+                    status = "💎 DIAMOND SETUP"
 
-            sparkline = df['Close'].tail(48).reset_index(drop=True)
-            color = "#00FF00" if sparkline.iloc[-1] >= sparkline.iloc[0] else "#FF4B4B"
+                sparkline = df['Close'].tail(48).reset_index(drop=True)
+                color = "#00FF00" if sparkline.iloc[-1] >= sparkline.iloc[0] else "#FF4B4B"
 
-            # Risk Calc
-            atr = last['ATR']
-            chan_stop = last['Chandelier_Exit']
-            hard_stop = price * 0.985 
-            stop_loss = max(chan_stop, hard_stop)
+                # Risk Calc
+                atr = last['ATR']
+                chan_stop = last['Chandelier_Exit']
+                hard_stop = price * 0.985 
+                stop_loss = max(chan_stop, hard_stop)
+                if pd.isna(stop_loss): stop_loss = price * 0.95
+
+                take_profit = price + (2.5 * atr)
+                
+                # Shares
+                safe_shares = int((wallet_size * 0.02) / (price - stop_loss)) if (price - stop_loss) > 0 else 1
+                safe_shares = min(safe_shares, int((wallet_size * 0.20) / price))
+                if safe_shares < 1: safe_shares = 1
+
+                result = {
+                    "Ticker": ticker,
+                    "Price": price,
+                    "RSI": last['RSI'],
+                    "AI_Score": ai_score,
+                    "Status": status,
+                    "Chart": sparkline,
+                    "Color": color,
+                    "Shares": safe_shares,
+                    "Stop_Loss": stop_loss,
+                    "Take_Profit": take_profit
+                }
+                return result, "OK"
             
-            # Position Sizing
-            risk_per_trade = wallet_size * 0.01 
-            risk_per_share = price - stop_loss
-            if risk_per_share <= 0: risk_per_share = price * 0.01
-            safe_shares = int(risk_per_trade / risk_per_share)
-            max_capital_per_trade = wallet_size * 0.20
-            max_shares_by_capital = int(max_capital_per_trade / price)
-            final_shares = min(safe_shares, max_shares_by_capital)
-            if final_shares < 1: final_shares = 1
-
-            take_profit = price + (2.5 * atr)
-
-            result = {
-                "Ticker": ticker,
-                "Price": price,
-                "RSI": last['RSI'],
-                "AI_Score": ai_score,
-                "Status": status,
-                "Chart": sparkline,
-                "Color": color,
-                "Shares": final_shares,
-                "Stop_Loss": stop_loss,
-                "Take_Profit": take_profit
-            }
-            return result, "OK"
+            return None, f"Low Score ({ai_score:.1f} < {min_ai_score})"
             
         return None, "Weak Setup"
     except Exception as e:
