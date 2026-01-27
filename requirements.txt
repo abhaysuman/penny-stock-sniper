@@ -62,3 +62,5 @@ backtesting
 altair
 requests
 scikit-learn
+lxml
+html5lib
