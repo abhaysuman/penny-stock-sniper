@@ -10,7 +10,7 @@ from backtesting.lib import crossover
 import streamlit.components.v1 as components
 
 # --- CONFIG ---
-st.set_page_config(layout="wide", page_title="Stock Algo", page_icon="📈")
+st.set_page_config(layout="wide", page_title="AI Infinity Scanner", page_icon="🦅")
 
 st.markdown("""
 <style>
@@ -35,6 +35,9 @@ if 'scanned_results' not in st.session_state: st.session_state.scanned_results =
 if 'scan_logs' not in st.session_state: st.session_state.scan_logs = []
 if 'scan_index' not in st.session_state: st.session_state.scan_index = 0
 if 'currency_symbol' not in st.session_state: st.session_state.currency_symbol = "₹"
+# New counters to track progress
+if 'total_scanned' not in st.session_state: st.session_state.total_scanned = 0
+if 'total_rejected' not in st.session_state: st.session_state.total_rejected = 0
 
 # --- NAVIGATION ---
 def go_to_details(ticker):
@@ -71,7 +74,7 @@ def make_sparkline(data_series, color_hex):
 def fetch_realtime_symbols(region):
     try:
         # 1. INDIA (NSE)
-        if region == "India (NSE)":
+        if region == "🇮🇳 India (NSE)":
             url = "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv"
             headers = {"User-Agent": "Mozilla/5.0"}
             s = requests.get(url, headers=headers).content
@@ -79,25 +82,21 @@ def fetch_realtime_symbols(region):
             return [f"{x}.NS" for x in df['SYMBOL'].tolist()]
 
         # 2. USA (S&P 500)
-        elif region == "USA (S&P 500)":
+        elif region == "🇺🇸 USA (S&P 500)":
             url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
             tables = pd.read_html(url)
-            df = tables[0] # The first table usually contains the list
-            # Yahoo Finance uses '-' instead of '.' for tickers like BRK.B -> BRK-B
+            df = tables[0]
             symbols = df['Symbol'].str.replace('.', '-', regex=False).tolist()
             return symbols
 
         # 3. UK (FTSE 100)
-        elif region == "UK (FTSE 100)":
+        elif region == "🇬🇧 UK (FTSE 100)":
             url = 'https://en.wikipedia.org/wiki/FTSE_100_Index'
             tables = pd.read_html(url)
-            # Look for the table with 'Ticker' column
             for table in tables:
                 if 'Ticker' in table.columns:
-                    # Append .L for London Stock Exchange tickers
                     return [f"{x}.L" for x in table['Ticker'].tolist()]
             return []
-            
     except Exception as e:
         st.error(f"Error fetching symbols: {e}")
         return []
@@ -107,33 +106,36 @@ def fetch_realtime_symbols(region):
 if st.session_state.page == "scanner":
     
     with st.sidebar:
-        st.header("Scanner")
+        st.header("🦅 Infinity Scanner")
         
-        # MARKET SELECTOR
-        region = st.selectbox("Market", ["India (NSE)", "USA (S&P 500)", "UK (FTSE 100)"])
+        region = st.selectbox("Market", ["🇮🇳 India (NSE)", "🇺🇸 USA (S&P 500)", "🇬🇧 UK (FTSE 100)"])
         
-        # Set Currency Symbol based on selection
         if "India" in region: st.session_state.currency_symbol = "₹"
         elif "USA" in region: st.session_state.currency_symbol = "$"
         elif "UK" in region: st.session_state.currency_symbol = "£"
         
-        wallet = st.number_input(f"Max Price ({st.session_state.currency_symbol})", value=2000, step=100)
+        wallet = st.number_input(f"Account Balance ({st.session_state.currency_symbol})", value=100000, step=1000)
         
         col1, col2 = st.columns(2)
         if col1.button("▶ START", type="primary"):
             st.session_state.is_scanning = True
-            st.session_state.scan_logs = [] 
+            st.session_state.scan_logs = []
+            st.session_state.total_scanned = 0 # Reset counters
+            st.session_state.total_rejected = 0
             st.rerun()
         if col2.button("⏹ STOP"):
             st.session_state.is_scanning = False
             st.rerun()
             
         st.divider()
-        st.subheader("Live Logs")
+        st.caption(f"📊 Scanned: {st.session_state.total_scanned}")
+        st.caption(f"❌ Rejected: {st.session_state.total_rejected}")
+        st.divider()
+        st.subheader("📝 Live Logs")
         for log in reversed(st.session_state.scan_logs[-10:]):
             st.text(log)
 
-    st.title("Live Market Feed")
+    st.title("Live Market Feed (Sorted by AI Score)")
 
     # 1. RENDER RESULTS
     if st.session_state.scanned_results:
@@ -157,17 +159,17 @@ if st.session_state.page == "scanner":
                             st.altair_chart(chart, use_container_width=True)
                             
                             st.caption(f"Stop: {item['Stop_Loss']:.2f} | Target: {item['Take_Profit']:.2f}")
+                            st.caption(f"Position: {item['Shares']} shares")
                             
-                            # Badge for Diamond Setup
                             if "DIAMOND" in item['Status']:
-                                st.info("💎 DIAMOND SETUP DETECTED")
+                                st.info("💎 DIAMOND SETUP")
 
                             st.button(f"Analyze {item['Ticker']}", 
                                       key=f"btn_{item['Ticker']}", 
                                       on_click=go_to_details, 
                                       args=(item['Ticker'],))
 
-    # 2. SCANNING LOGIC
+    # 2. SCANNING LOGIC (BATCH MODE)
     if st.session_state.is_scanning:
         full_list = fetch_realtime_symbols(region)
         
@@ -175,24 +177,36 @@ if st.session_state.page == "scanner":
             st.error("Could not fetch symbols. Check connection.")
             st.session_state.is_scanning = False
         else:
-            if st.session_state.scan_index >= len(full_list): st.session_state.scan_index = 0
-                
-            ticker = full_list[st.session_state.scan_index]
-            st.toast(f"Scanning: {ticker}...")
+            # --- BATCH SCANNING LOOP ---
+            batch_size = 5 
             
-            # Analyze
-            result, message = bot.analyze_ticker_precision(ticker, wallet)
-            st.session_state.scan_logs.append(f"{ticker}: {message}")
-            
-            if result:
-                # Remove duplicates
-                st.session_state.scanned_results = [r for r in st.session_state.scanned_results if r['Ticker'] != ticker]
-                st.session_state.scanned_results.append(result)
-                # Sort: Strong Buy first, then by AI Score
-                st.session_state.scanned_results.sort(key=lambda x: (x['Status'] == "🔥 STRONG BUY", x['AI_Score']), reverse=True)
+            for _ in range(batch_size):
+                if st.session_state.scan_index >= len(full_list): 
+                    st.session_state.scan_index = 0
                 
-            st.session_state.scan_index += 1
-            time.sleep(0.05)
+                ticker = full_list[st.session_state.scan_index]
+                
+                st.session_state.total_scanned += 1
+                
+                try:
+                    result, message = bot.analyze_ticker_precision(ticker, wallet)
+                    st.session_state.scan_logs.append(f"{ticker}: {message}")
+                    
+                    if result:
+                        st.session_state.scanned_results = [r for r in st.session_state.scanned_results if r['Ticker'] != ticker]
+                        st.session_state.scanned_results.append(result)
+                        st.session_state.scanned_results.sort(key=lambda x: (x['Status'] == "🔥 STRONG BUY", x['AI_Score']), reverse=True)
+                        st.toast(f"Found Gem: {ticker}!")
+                    else:
+                        st.session_state.total_rejected += 1
+                        
+                except Exception as e:
+                    st.session_state.scan_logs.append(f"{ticker}: Error {str(e)}")
+                
+                st.session_state.scan_index += 1
+            
+            st.toast(f"Scanning... ({st.session_state.total_scanned} analyzed)")
+            time.sleep(0.01)
             st.rerun()
 
 # --- PAGE 2: DETAILS ---
